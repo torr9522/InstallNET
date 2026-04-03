@@ -4915,8 +4915,11 @@ else
 fi
 
 if is_in_windows; then
-    echo 'You can run this command to reboot:'
-    echo 'shutdown /r /t 0'
+    shutdown /r /t 0
+else
+    # Attempt automatic reboot on Unix-like systems
+    # Use sudo if required; the script may already be running as root.
+    reboot || true
 fi
 
 echo

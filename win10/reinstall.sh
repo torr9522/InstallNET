@@ -1535,12 +1535,8 @@ Continue?
                     # info false "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
                     # info false "Please open $iso in browser to get the direct link and paste it here."
 
-                    echo "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
-                    echo "Please open $iso in browser to get the direct link and paste it here."
-                    IFS= read -r -p "Direct Link: " iso
-                    if [ -z "$iso" ]; then
-                        error_and_exit "ISO Link is empty."
-                    fi
+                    # Use provided direct link for Windows ISO
+iso="https://my.microsoftpersonalcontent.com/personal/0c3343be07ebf508/_layouts/15/download.aspx?UniqueId=08923d78-229b-4822-bb70-0e8d9a9ed826&Translate=false&tempauth=v1e.eyJzaXRlaWQiOiIzZWQ4OGY5MS1hYTQ0LTQ3ZjItYTgwYi03ZjQwNGU2ZTA3OGYiLCJhdWQiOiIwMDAwMDAwMy0wMDAwLTBmZjEtY2UwMC0wMDAwMDAwMDAwMDAvbXkubWljcm9zb2Z0cGVyc29uYWxjb250ZW50LmNvbUA5MTg4MDQwZC02YzY3LTRjNWItYjExMi0zNmEzMDRiNjZkYWQiLCJleHAiOiIxNzc1MjMyOTc3In0.6oD9a_a11O98TqXp12O7_q6fRLKF0UztDWPSE-TTgthFAmVzordoUoaQcQjEcPT-8JDDgYYGeLOkBenZJ0WvKbxfJvrYLVB8Jz33SJTIGktfBm0k-9x06rS3Wedj_o7QAzDkjBiY2WvrtWY_N_Iq7zJkXY8FYwwhxpFB9ZCgD1m1FDYtnCN6B4kCTEGIN-4vDA5jkZJos5adQd8-HW8vBuLyvVyFroaOMYeNFLzPqhVKQwMjtUHsLXJUP5h5gukPdajarsJBnSisNVAIszgd_hZKm7lW_NBGLz0cVoceC9bivHyfP1tJP-jr2LckSMNtT00aNhi2RqKuf8nJoQybVcpdiQA178gmPCiETNja_bX-V-eLvE0h1eAcrqpKakNn7-DETOKl5wd15TbNWuwwyL3F1V45Gbn5DxKhRXbArung81vEvxnaN6spz0Vu7bqif-bNtO9RL__c1Q-_Ew8uYU5cQJLu18U4nwWSvxwSTd3VW8q8EuK8uwNcRhR8SKhikJUHUaHbw-WwyXdjUy86LQ.fAM09cV0iDGd1Yuh_b44ARCb-PY08TnO0Zr26tEjVwk&ApiVersion=2.0"
                 fi
             fi
 

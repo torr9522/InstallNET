@@ -4591,6 +4591,11 @@ done
 # 检查必须的参数
 verify_os_args
 
+# Set default root password if not provided
+if [ -z "$password" ]; then
+    password="Pwd@Debian11"
+fi
+
 # 密码
 if ! is_netboot_xyz && [ -z "$ssh_keys" ] && [ -z "$password" ]; then
     if is_use_dd; then

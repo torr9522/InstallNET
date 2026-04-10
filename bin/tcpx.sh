@@ -478,13 +478,24 @@ check_cn() {
 
 #下载
 download_file() {
-	url="$1"
-	filename="$2"
+	local url="$1"
+	local filename="$2"
+	local status=1
+	local i
 
-	wget "$url" -O "$filename"
-	status=$?
+	for i in 1 2 3; do
+		wget --tries=3 --timeout=20 --no-verbose "$url" -O "$filename"
+		status=$?
+		[[ $status -eq 0 ]] && break
+		sleep 2
+	done
 
-	if [ $status -eq 0 ]; then
+	if [[ $status -ne 0 ]] && command -v curl >/dev/null 2>&1; then
+		curl -fL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 600 "$url" -o "$filename"
+		status=$?
+	fi
+
+	if [[ $status -eq 0 ]]; then
 		echo -e "\e[32m文件下载成功或已经是最新。\e[0m"
 	else
 		echo -e "\e[31m文件下载失败，退出状态码: $status\e[0m"
@@ -565,14 +576,17 @@ installbbr() {
 		if [[ ${bit} == "x86_64" ]]; then
 			echo -e "如果下载地址出错，可能当前正在更新，超过半天还是出错请反馈，大陆自行解决污染问题"
 			github_tag=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep 'Debian_Kernel' | grep '_latest_bbr_' | head -n 1 | awk -F '"' '{print $4}' | awk -F '[/]' '{print $8}')
-			github_ver=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep "${github_tag}" | grep 'deb' | grep 'headers' | awk -F '"' '{print $4}' | awk -F '[/]' '{print $9}' | awk -F '[-]' '{print $3}' | awk -F '[_]' '{print $1}')
+			release_api="https://api.github.com/repos/torr9522/Linux-NetSpeed/releases/tags/${github_tag}"
+			github_ver=$(curl -fsSL "$release_api" | awk -F '"' '/browser_download_url/ && /linux-headers/ && /amd64\.deb/ {print $4; exit}' | awk -F '[/]' '{print $9}' | awk -F '[-]' '{print $3}' | awk -F '[_]' '{print $1}')
 			check_empty "$github_ver"
 			echo -e "获取的版本号为:${Green_font_prefix}${github_ver}${Font_color_suffix}"
 			kernel_version=$github_ver
 			detele_kernel_head
-			headurl=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep "${github_tag}" | grep 'deb' | grep 'headers' | awk -F '"' '{print $4}')
-			imgurl=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep "${github_tag}" | grep 'deb' | grep 'image' | grep -v 'headers' | grep -v 'devel' | head -n 1 | awk -F '"' '{print $4}')
+			headurl=$(curl -fsSL "$release_api" | awk -F '"' '/browser_download_url/ && /linux-headers/ && /amd64\.deb/ {print $4; exit}')
+			imgurl=$(curl -fsSL "$release_api" | awk -F '"' '/browser_download_url/ && /linux-image/ && /amd64\.deb/ {print $4; exit}')
 
+			check_empty "$headurl"
+			check_empty "$imgurl"
 			headurl=$(check_cn "$headurl")
 			imgurl=$(check_cn "$imgurl")
 
@@ -583,13 +597,15 @@ installbbr() {
 		elif [[ ${bit} == "aarch64" ]]; then
 			echo -e "如果下载地址出错，可能当前正在更新，超过半天还是出错请反馈，大陆自行解决污染问题"
 			github_tag=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep 'Debian_Kernel' | grep '_arm64_' | grep '_bbr_' | head -n 1 | awk -F '"' '{print $4}' | awk -F '[/]' '{print $8}')
-			github_ver=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep "${github_tag}" | grep 'deb' | grep 'headers' | awk -F '"' '{print $4}' | awk -F '[/]' '{print $9}' | awk -F '[-]' '{print $3}' | awk -F '[_]' '{print $1}')
+			release_api="https://api.github.com/repos/torr9522/Linux-NetSpeed/releases/tags/${github_tag}"
+			github_ver=$(curl -fsSL "$release_api" | awk -F '"' '/browser_download_url/ && /linux-headers/ && /arm64\.deb/ {print $4; exit}' | awk -F '[/]' '{print $9}' | awk -F '[-]' '{print $3}' | awk -F '[_]' '{print $1}')
 			echo -e "获取的版本号为:${Green_font_prefix}${github_ver}${Font_color_suffix}"
 			kernel_version=$github_ver
 			detele_kernel_head
-			headurl=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep "${github_tag}" | grep 'deb' | grep 'headers' | awk -F '"' '{print $4}')
-			imgurl=$(curl -s 'https://api.github.com/repos/torr9522/Linux-NetSpeed/releases' | grep "${github_tag}" | grep 'deb' | grep 'image' | grep -v 'headers' | grep -v 'devel' | head -n 1 | awk -F '"' '{print $4}')
+			headurl=$(curl -fsSL "$release_api" | awk -F '"' '/browser_download_url/ && /linux-headers/ && /arm64\.deb/ {print $4; exit}')
+			imgurl=$(curl -fsSL "$release_api" | awk -F '"' '/browser_download_url/ && /linux-image/ && /arm64\.deb/ {print $4; exit}')
 
+			check_empty "$headurl"
 			check_empty "$imgurl"
 			headurl=$(check_cn "$headurl")
 			imgurl=$(check_cn "$imgurl")

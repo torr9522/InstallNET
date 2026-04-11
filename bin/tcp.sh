@@ -1667,7 +1667,7 @@ start_menu() {
  ${Green_font_prefix}9.${Font_color_suffix} 切换到不卸载内核版本	${Green_font_prefix}10.${Font_color_suffix} 切换到一键DD系统脚本
  ${Green_font_prefix}60.${Font_color_suffix} 切换到检查当前IP质量/媒体解锁/邮箱通信脚本
  ${Green_font_prefix}1.${Font_color_suffix} 安装 BBR原版内核
- ${Green_font_prefix}2.${Font_color_suffix} 安装 XanMod Kernel(支持BBR3)	${Green_font_prefix}5.${Font_color_suffix} 安装 BBRplus新版内核
+ ${Green_font_prefix}2.${Font_color_suffix} XanMod Kernel (支持 BBR3)	${Green_font_prefix}5.${Font_color_suffix} 安装 BBRplus新版内核
  ${Green_font_prefix}3.${Font_color_suffix} 安装 Lotserver(锐速)内核
  ${Green_font_prefix}8.${Font_color_suffix} 安装 官方cloud内核 (支持debian系列)
  ${Green_font_prefix}11.${Font_color_suffix} 使用BBR+FQ加速		${Green_font_prefix}12.${Font_color_suffix} 使用BBR+FQ_PIE加速

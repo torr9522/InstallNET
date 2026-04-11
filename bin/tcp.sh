@@ -1410,27 +1410,27 @@ maxmode=\"1\"" >>/appex/etc/config
 startbbr2fq() {
   remove_bbr_lotserver
   echo "net.core.default_qdisc=fq" >>/etc/sysctl.d/99-sysctl.conf
-  echo "net.ipv4.tcp_congestion_control=bbr2" >>/etc/sysctl.d/99-sysctl.conf
+  echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.d/99-sysctl.conf
   sysctl --system
-  echo -e "${Info}BBR2修改成功，重启生效！"
+  echo -e "${Info}BBR3修改成功，重启生效！"
 }
 
 #启用BBR2+FQ_PIE
 startbbr2fqpie() {
   remove_bbr_lotserver
   echo "net.core.default_qdisc=fq_pie" >>/etc/sysctl.d/99-sysctl.conf
-  echo "net.ipv4.tcp_congestion_control=bbr2" >>/etc/sysctl.d/99-sysctl.conf
+  echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.d/99-sysctl.conf
   sysctl --system
-  echo -e "${Info}BBR2修改成功，重启生效！"
+  echo -e "${Info}BBR3修改成功，重启生效！"
 }
 
 #启用BBR2+CAKE
 startbbr2cake() {
   remove_bbr_lotserver
   echo "net.core.default_qdisc=cake" >>/etc/sysctl.d/99-sysctl.conf
-  echo "net.ipv4.tcp_congestion_control=bbr2" >>/etc/sysctl.d/99-sysctl.conf
+  echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.d/99-sysctl.conf
   sysctl --system
-  echo -e "${Info}BBR2修改成功，重启生效！"
+  echo -e "${Info}BBR3修改成功，重启生效！"
 }
 
 #开启ecn
@@ -1663,21 +1663,12 @@ net.ipv6.conf.default.accept_ra = 2" >>/etc/sysctl.d/99-sysctl.conf
 start_menu() {
   clear
   echo && echo -e " TCP加速 一键安装管理脚本 ${Red_font_prefix}[v${sh_ver}]${Font_color_suffix} from blog.ylx.me 母鸡慎用
- ${Green_font_prefix}0.${Font_color_suffix} 升级脚本
- ${Green_font_prefix}9.${Font_color_suffix} 切换到不卸载内核版本	${Green_font_prefix}10.${Font_color_suffix} 切换到一键DD系统脚本
- ${Green_font_prefix}60.${Font_color_suffix} 切换到检查当前IP质量/媒体解锁/邮箱通信脚本
  ${Green_font_prefix}1.${Font_color_suffix} 安装 BBR原版内核
- ${Green_font_prefix}2.${Font_color_suffix} XanMod Kernel (支持 BBR3)	${Green_font_prefix}5.${Font_color_suffix} 安装 BBRplus新版内核
- ${Green_font_prefix}3.${Font_color_suffix} 安装 Lotserver(锐速)内核
- ${Green_font_prefix}8.${Font_color_suffix} 安装 官方cloud内核 (支持debian系列)
+ ${Green_font_prefix}2.${Font_color_suffix} XanMod Kernel (支持 BBR3)
  ${Green_font_prefix}11.${Font_color_suffix} 使用BBR+FQ加速		${Green_font_prefix}12.${Font_color_suffix} 使用BBR+FQ_PIE加速
- ${Green_font_prefix}13.${Font_color_suffix} 使用BBR+CAKE加速		${Green_font_prefix}14.${Font_color_suffix} 使用BBR2+FQ加速
- ${Green_font_prefix}15.${Font_color_suffix} 使用BBR2+FQ_PIE加速	${Green_font_prefix}16.${Font_color_suffix} 使用BBR2+CAKE加速
- ${Green_font_prefix}17.${Font_color_suffix} 开启ECN	 		${Green_font_prefix}18.${Font_color_suffix} 关闭ECN
- ${Green_font_prefix}19.${Font_color_suffix} 使用BBRplus+FQ版加速 
- ${Green_font_prefix}20.${Font_color_suffix} 使用Lotserver(锐速)加速 
+ ${Green_font_prefix}13.${Font_color_suffix} 使用BBR+CAKE加速		${Green_font_prefix}14.${Font_color_suffix} 使用BBR3+FQ加速
+ ${Green_font_prefix}15.${Font_color_suffix} 使用BBR3+FQ_PIE加速	${Green_font_prefix}16.${Font_color_suffix} 使用BBR3+CAKE加速
  ${Green_font_prefix}21.${Font_color_suffix} 系统配置优化旧		${Green_font_prefix}22.${Font_color_suffix} 系统配置优化新
- ${Green_font_prefix}27.${Font_color_suffix} 系统配置优化激进方案
  ${Green_font_prefix}23.${Font_color_suffix} 禁用IPv6	 		${Green_font_prefix}24.${Font_color_suffix} 开启IPv6
  ${Green_font_prefix}25.${Font_color_suffix} 卸载全部加速	 	${Green_font_prefix}99.${Font_color_suffix} 退出脚本 
 ————————————————————————————————————————————————————————————————" &&

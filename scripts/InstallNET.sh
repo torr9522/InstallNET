@@ -38,6 +38,10 @@ export GRUBVER=''
 export VER=''
 export setCMD=''
 export setConsole=''
+export INSTALL_ENTRY_TITLE=''
+export INSTALLNET_FORCE_GRUB_ONCE="${INSTALLNET_FORCE_GRUB_ONCE:-1}"
+export INSTALLNET_ABORT_ONESHOT_FAILURE="${INSTALLNET_ABORT_ONESHOT_FAILURE:-1}"
+export INSTALLNET_NO_REBOOT="${INSTALLNET_NO_REBOOT:-0}"
 
 while [[ $# -ge 1 ]]; do
   case $1 in
@@ -143,12 +147,16 @@ while [[ $# -ge 1 ]]; do
       shift
       setIPv6='1'
       ;;
+    --no-reboot)
+      shift
+      INSTALLNET_NO_REBOOT='1'
+      ;;
     -a|--auto|-m|--manual|-ssl)
       shift
       ;;
     *)
       if [[ "$1" != 'error' ]]; then echo -ne "\nInvaild option: '$1'\n\n"; fi
-      echo -ne " Usage:\n\tbash $(basename $0)\t-d/--debian [\033[33m\033[04mdists-name\033[0m]\n\t\t\t\t-u/--ubuntu [\033[04mdists-name\033[0m]\n\t\t\t\t-c/--centos [\033[04mdists-name\033[0m]\n\t\t\t\t-v/--ver [32/i386|64/\033[33m\033[04mamd64\033[0m] [\033[33m\033[04mdists-verison\033[0m]\n\t\t\t\t--ip-addr/--ip-gate/--ip-mask\n\t\t\t\t-apt/-yum/--mirror\n\t\t\t\t-dd/--image\n\t\t\t\t-p [linux password]\n\t\t\t\t-port [linux ssh port]\n"
+      echo -ne " Usage:\n\tbash $(basename $0)\t-d/--debian [\033[33m\033[04mdists-name\033[0m]\n\t\t\t\t-u/--ubuntu [\033[04mdists-name\033[0m]\n\t\t\t\t-c/--centos [\033[04mdists-name\033[0m]\n\t\t\t\t-v/--ver [32/i386|64/\033[33m\033[04mamd64\033[0m] [\033[33m\033[04mdists-verison\033[0m]\n\t\t\t\t--ip-addr/--ip-gate/--ip-mask\n\t\t\t\t-apt/-yum/--mirror\n\t\t\t\t-dd/--image\n\t\t\t\t-p [linux password]\n\t\t\t\t-port [linux ssh port]\n\t\t\t\t--no-reboot\n"
       exit 1;
       ;;
     esac
@@ -273,6 +281,36 @@ function lowMem(){
   mem=`grep "^MemTotal:" /proc/meminfo 2>/dev/null |grep -o "[0-9]*"`
   [ -n "$mem" ] || return 0
   [ "$mem" -le "524288" ] && return 1 || return 0
+}
+
+function commandExists(){
+  command -v "$1" >/dev/null 2>&1
+}
+
+function scheduleGrubOnceBoot(){
+  local entry="$1"
+  local grubenv="${GRUBDIR}/grubenv"
+
+  [ -n "$entry" ] || return 1
+
+  if commandExists grub-reboot; then
+    grub-reboot "$entry" && return 0
+  fi
+
+  if commandExists grub2-reboot; then
+    grub2-reboot "$entry" && return 0
+  fi
+
+  if [ -f "$grubenv" ]; then
+    if commandExists grub-editenv; then
+      grub-editenv "$grubenv" set next_entry="$entry" && return 0
+    fi
+    if commandExists grub2-editenv; then
+      grub2-editenv "$grubenv" set next_entry="$entry" && return 0
+    fi
+  fi
+
+  return 1
 }
 
 if [[ "$loaderMode" == "0" ]]; then
@@ -500,6 +538,8 @@ else
   GRUBVER='-1'
 fi
 
+INSTALL_ENTRY_TITLE="Install OS [$DIST $VER]"
+
 [[ "$GRUBVER" == '0' ]] && {
   READGRUB='/tmp/grub.read'
   cat $GRUBDIR/$GRUBFILE |sed -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' |grep -om 1 'menuentry\ [^{]*{[^}]*}%%%%%%%' |sed 's/%%%%%%%/\n/g' >$READGRUB
@@ -526,7 +566,7 @@ fi
     }
   fi
   [ ! -f /tmp/grub.new ] && echo "Error! $GRUBFILE. " && exit 1;
-  sed -i "/menuentry.*/c\menuentry\ \'Install OS \[$DIST\ $VER\]\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ \{" /tmp/grub.new
+  sed -i "/menuentry.*/c\menuentry\ \'${INSTALL_ENTRY_TITLE}\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ \{" /tmp/grub.new
   sed -i "/echo.*Loading/d" /tmp/grub.new;
   INSERTGRUB="$(awk '/menuentry /{print NR}' $GRUBDIR/$GRUBFILE|head -n 1)"
 }
@@ -537,7 +577,7 @@ fi
   [[ -n $CFG0 ]] && [ -z $CFG1 -o $CFG1 == $CFG0 ] && sed -n "$CFG0,$"p $GRUBDIR/$GRUBFILE >/tmp/grub.new;
   [[ -n $CFG0 ]] && [ -z $CFG1 -o $CFG1 != $CFG0 ] && sed -n "$CFG0,$[$CFG1-1]"p $GRUBDIR/$GRUBFILE >/tmp/grub.new;
   [[ ! -f /tmp/grub.new ]] && echo "Error! configure append $GRUBFILE. " && exit 1;
-  sed -i "/title.*/c\title\ \'Install OS \[$DIST\ $VER\]\'" /tmp/grub.new;
+  sed -i "/title.*/c\title\ \'${INSTALL_ENTRY_TITLE}\'" /tmp/grub.new;
   sed -i '/^#/d' /tmp/grub.new;
   INSERTGRUB="$(awk '/title[\ ]|title[\t]/{print NR}' $GRUBDIR/$GRUBFILE|head -n 1)"
 }
@@ -577,7 +617,6 @@ if [[ "$loaderMode" == "0" ]]; then
   
   sed -i ''${INSERTGRUB}'i\\n' $GRUBDIR/$GRUBFILE;
   sed -i ''${INSERTGRUB}'r /tmp/grub.new' $GRUBDIR/$GRUBFILE;
-  [[ -f  $GRUBDIR/grubenv ]] && sed -i 's/saved_entry/#saved_entry/g' $GRUBDIR/grubenv;
 fi
 
 [[ -d /tmp/boot ]] && rm -rf /tmp/boot;
@@ -792,7 +831,22 @@ if [[ "$loaderMode" == "0" ]]; then
   chown root:root $GRUBDIR/$GRUBFILE
   chmod 444 $GRUBDIR/$GRUBFILE
 
-  sleep 3 && reboot || sudo reboot >/dev/null 2>&1
+  if [[ "$GRUBVER" == '0' ]] && [[ "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]]; then
+    if scheduleGrubOnceBoot "$INSTALL_ENTRY_TITLE"; then
+      echo -e "\033[32mInfo:\033[0m scheduled one-shot boot entry: $INSTALL_ENTRY_TITLE"
+    else
+      echo -e "\033[31mError! \033[0mfailed to set one-shot boot entry: $INSTALL_ENTRY_TITLE"
+      [[ "$INSTALLNET_ABORT_ONESHOT_FAILURE" == '1' ]] && exit 1
+    fi
+  fi
+
+  if [[ "$INSTALLNET_NO_REBOOT" == '1' ]]; then
+    echo -e "\033[33mInfo:\033[0m reboot skipped because --no-reboot was requested."
+    exit 0
+  fi
+
+  sleep 3
+  reboot || sudo reboot >/dev/null 2>&1
 else
   rm -rf "$HOME/loader"
   mkdir -p "$HOME/loader"
@@ -802,4 +856,3 @@ else
   rm -rf "/tmp/vmlinuz"
   echo && ls -AR1 "$HOME/loader"
 fi
-

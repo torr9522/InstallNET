@@ -55,6 +55,7 @@ new_fixture(){
   INSTALLNET_FORCE_GRUB_ONCE='1'
   INSTALLNET_NO_REBOOT='1'
   INSTALLNET_GRUB_EDITENV_COMMAND="$MOCK_BIN/grub-editenv"
+  INSTALLNET_GRUB_REBOOT_COMMAND="$MOCK_BIN/grub-reboot"
   INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND="$MOCK_BIN/grub-script-check"
   INSTALLNET_SOURCE_KERNEL="$FIXTURE/source-vmlinuz"
   INSTALLNET_SOURCE_INITRD="$FIXTURE/source-initrd.img"
@@ -72,11 +73,10 @@ envfile="$1"
 action="$2"
 case "$action" in
   set)
-    case "${MOCK_GRUBENV_MODE:-good}" in
-      good) printf '%s\n' "$3" >"$envfile" ;;
-      missing) : ;;
-      wrong) printf '%s\n' 'next_entry=original-system' >"$envfile" ;;
-    esac
+    printf '%s\n' "$3" >"$envfile"
+    ;;
+  unset)
+    sed -i '/^next_entry=/d' "$envfile"
     ;;
   list)
     cat "$envfile"
@@ -85,6 +85,15 @@ case "$action" in
 esac
 EOF
   chmod +x "$MOCK_BIN/grub-editenv"
+  cat >"$MOCK_BIN/grub-reboot" <<'EOF'
+#!/bin/bash
+case "${MOCK_GRUBENV_MODE:-good}" in
+  good) printf 'next_entry=%s\n' "$1" >"$MOCK_SELECTED_GRUBENV" ;;
+  missing) : ;;
+  wrong) printf '%s\n' 'next_entry=original-system' >"$MOCK_SELECTED_GRUBENV" ;;
+esac
+EOF
+  chmod +x "$MOCK_BIN/grub-reboot"
 }
 
 write_syntax_stub(){
@@ -134,7 +143,7 @@ EOF
 test_valid_grubenv(){
   new_fixture
   write_editenv_stub
-  MOCK_GRUBENV_MODE='good' scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
+  MOCK_SELECTED_GRUBENV="$GRUBDIR/grubenv" MOCK_GRUBENV_MODE='good' scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
   grep -Fx 'next_entry=installnet-once' "$GRUBDIR/grubenv" >/dev/null
 }
 
@@ -157,13 +166,13 @@ test_legacy_grub_fallback(){
 test_missing_next_entry(){
   new_fixture
   write_editenv_stub
-  MOCK_GRUBENV_MODE='missing' assert_failure scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
+  MOCK_SELECTED_GRUBENV="$GRUBDIR/grubenv" MOCK_GRUBENV_MODE='missing' assert_failure scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
 }
 
 test_wrong_next_entry(){
   new_fixture
   write_editenv_stub
-  MOCK_GRUBENV_MODE='wrong' assert_failure scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
+  MOCK_SELECTED_GRUBENV="$GRUBDIR/grubenv" MOCK_GRUBENV_MODE='wrong' assert_failure scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
 }
 
 test_explicit_grubenv_path(){
@@ -171,7 +180,7 @@ test_explicit_grubenv_path(){
   write_editenv_stub
   mkdir -p "$FIXTURE/other-grub"
   printf '%s\n' 'next_entry=original-system' >"$FIXTURE/other-grub/grubenv"
-  MOCK_GRUBENV_MODE='good' scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
+  MOCK_SELECTED_GRUBENV="$GRUBDIR/grubenv" MOCK_GRUBENV_MODE='good' scheduleGrubOnceBoot "$INSTALL_ENTRY_ID"
   grep -Fx 'next_entry=installnet-once' "$GRUBDIR/grubenv" >/dev/null
   grep -Fx 'next_entry=original-system' "$FIXTURE/other-grub/grubenv" >/dev/null
 }
@@ -256,7 +265,7 @@ EOF
 printf 'reboot\n' >>'$FIXTURE/calls'
 EOF
   chmod +x "$MOCK_BIN/sync" "$MOCK_BIN/reboot"
-  PATH="$MOCK_BIN:$PATH" finishInstallerHandoff
+  MOCK_SELECTED_GRUBENV="$GRUBDIR/grubenv" PATH="$MOCK_BIN:$PATH" finishInstallerHandoff
   grep -F '[PASS] handoff preflight' "$INSTALLNET_HANDOFF_LOG" >/dev/null
   grep -F '[PASS] installer handoff verified; reboot skipped by --no-reboot' "$INSTALLNET_HANDOFF_LOG" >/dev/null
   ! grep -F 'reboot' "$FIXTURE/calls" >/dev/null
@@ -265,8 +274,8 @@ EOF
 run_test 'valid grubenv next_entry passes' test_valid_grubenv
 run_test 'standard /boot/grub path has priority' test_grub_path_priority
 run_test 'legacy grub path remains available as fallback' test_legacy_grub_fallback
-run_test 'successful set without next_entry fails' test_missing_next_entry
-run_test 'next_entry pointing to original system fails' test_wrong_next_entry
+run_test 'grub-reboot exit 0 without next_entry fails' test_missing_next_entry
+run_test 'grub-reboot next_entry pointing to original system fails' test_wrong_next_entry
 run_test 'one-shot setter uses the selected GRUBDIR grubenv' test_explicit_grubenv_path
 run_test 'missing installer kernel fails' test_missing_kernel
 run_test 'missing installer initrd fails' test_missing_initrd

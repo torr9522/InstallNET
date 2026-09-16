@@ -39,9 +39,19 @@ export VER=''
 export setCMD=''
 export setConsole=''
 export INSTALL_ENTRY_TITLE=''
+export INSTALL_ENTRY_ID='installnet-once'
 export INSTALLNET_FORCE_GRUB_ONCE="${INSTALLNET_FORCE_GRUB_ONCE:-1}"
 export INSTALLNET_ABORT_ONESHOT_FAILURE="${INSTALLNET_ABORT_ONESHOT_FAILURE:-1}"
 export INSTALLNET_NO_REBOOT="${INSTALLNET_NO_REBOOT:-0}"
+export INSTALLNET_HANDOFF_LOG="${INSTALLNET_HANDOFF_LOG:-/var/log/installnet-handoff.log}"
+export INSTALLNET_MIN_KERNEL_SIZE="${INSTALLNET_MIN_KERNEL_SIZE:-1048576}"
+export INSTALLNET_MIN_INITRD_SIZE="${INSTALLNET_MIN_INITRD_SIZE:-1048576}"
+export INSTALLNET_SOURCE_KERNEL="${INSTALLNET_SOURCE_KERNEL:-/tmp/vmlinuz}"
+export INSTALLNET_SOURCE_INITRD="${INSTALLNET_SOURCE_INITRD:-/tmp/initrd.img}"
+export INSTALLNET_TARGET_KERNEL="${INSTALLNET_TARGET_KERNEL:-/boot/vmlinuz}"
+export INSTALLNET_TARGET_INITRD="${INSTALLNET_TARGET_INITRD:-/boot/initrd.img}"
+export INSTALLNET_GRUB_EDITENV_COMMAND="${INSTALLNET_GRUB_EDITENV_COMMAND:-}"
+export INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND="${INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND:-}"
 
 while [[ $# -ge 1 ]]; do
   case $1 in
@@ -262,15 +272,23 @@ function diskType(){
 
 function getGrub(){
   Boot="${1:-/boot}"
-  folder=`find "$Boot" -type d -name "grub*" 2>/dev/null |head -n1`
+  for configFile in "$Boot/grub/grub.cfg" "$Boot/grub2/grub.cfg"
+    do
+      [ -f "$configFile" ] || continue
+      folder=`dirname "$configFile"`
+      echo "${folder}:grub.cfg:0"
+      return
+    done
+
+  folder=`find "$Boot" -type f \( -name "grub.cfg" -o -name "grub.conf" \) 2>/dev/null |head -n1 |xargs -r dirname`
   [ -n "$folder" ] || return
-  fileName=`ls -1 "$folder" 2>/dev/null |grep '^grub.conf$\|^grub.cfg$'`
+  fileName=`ls -1 "$folder" 2>/dev/null |grep '^grub.conf$\|^grub.cfg$' |head -n1`
   if [ -z "$fileName" ]; then
     ls -1 "$folder" 2>/dev/null |grep -q '^grubenv$'
     [ $? -eq 0 ] || return
-    folder=`find "$Boot" -type f -name "grubenv" 2>/dev/null |xargs dirname |grep -v "^$folder" |head -n1`
+    folder=`find "$Boot" -type f -name "grubenv" 2>/dev/null |xargs -r dirname |grep -v "^$folder" |head -n1`
     [ -n "$folder" ] || return
-    fileName=`ls -1 "$folder" 2>/dev/null |grep '^grub.conf$\|^grub.cfg$'`
+    fileName=`ls -1 "$folder" 2>/dev/null |grep '^grub.conf$\|^grub.cfg$' |head -n1`
   fi
   [ -n "$fileName" ] || return
   [ "$fileName" == "grub.cfg" ] && ver="0" || ver="1"
@@ -283,35 +301,257 @@ function lowMem(){
   [ "$mem" -le "524288" ] && return 1 || return 0
 }
 
+# INSTALLNET_HANDOFF_HELPERS_BEGIN
 function commandExists(){
   command -v "$1" >/dev/null 2>&1
+}
+
+function logHandoff(){
+  local message="$1"
+  printf '%s\n' "$message"
+  [ -n "$INSTALLNET_HANDOFF_LOG" ] && printf '%s\n' "$message" >>"$INSTALLNET_HANDOFF_LOG"
+}
+
+function passHandoff(){
+  logHandoff "[PASS] $1"
+}
+
+function failHandoff(){
+  logHandoff "[FAIL] $1"
+  return 1
+}
+
+function getGrubEditEnvCommand(){
+  if [ -n "$INSTALLNET_GRUB_EDITENV_COMMAND" ]; then
+    [ "$INSTALLNET_GRUB_EDITENV_COMMAND" == 'none' ] && return 1
+    echo "$INSTALLNET_GRUB_EDITENV_COMMAND"
+    return 0
+  fi
+  if commandExists grub-editenv; then
+    echo 'grub-editenv'
+    return 0
+  fi
+  if commandExists grub2-editenv; then
+    echo 'grub2-editenv'
+    return 0
+  fi
+  return 1
+}
+
+function verifyGrubOnceBoot(){
+  local entry="$1"
+  local grubenv="${GRUBDIR}/grubenv"
+  local editEnvCommand grubenvList nextEntry
+
+  [ -f "$grubenv" ] || { failHandoff "one-shot grubenv not found: $grubenv"; return 1; }
+  editEnvCommand=`getGrubEditEnvCommand` || { failHandoff 'one-shot grub-editenv command not available'; return 1; }
+  grubenvList=`$editEnvCommand "$grubenv" list 2>&1` || {
+    logHandoff "$grubenvList"
+    failHandoff "one-shot grubenv cannot be read: $grubenv"
+    return 1
+  }
+  nextEntry=`printf '%s\n' "$grubenvList" |sed -n 's/^next_entry=//p' |tail -n1`
+  printf '%s\n' "$grubenvList" |grep -E '^(next_entry|saved_entry|recordfail|boot_once|boot_success)=' >>"$INSTALLNET_HANDOFF_LOG" || true
+  [ "$nextEntry" == "$entry" ] || {
+    failHandoff "one-shot next_entry mismatch: expected '$entry', got '${nextEntry:-<empty>}'"
+    return 1
+  }
+  passHandoff "one-shot next_entry=$entry"
 }
 
 function scheduleGrubOnceBoot(){
   local entry="$1"
   local grubenv="${GRUBDIR}/grubenv"
+  local editEnvCommand
 
-  [ -n "$entry" ] || return 1
+  [ -n "$entry" ] || { failHandoff 'one-shot entry is empty'; return 1; }
+  [ -f "$grubenv" ] || { failHandoff "one-shot grubenv not found: $grubenv"; return 1; }
+  editEnvCommand=`getGrubEditEnvCommand` || { failHandoff 'one-shot grub-editenv command not available'; return 1; }
 
-  if commandExists grub-reboot; then
-    grub-reboot "$entry" && return 0
-  fi
-
-  if commandExists grub2-reboot; then
-    grub2-reboot "$entry" && return 0
-  fi
-
-  if [ -f "$grubenv" ]; then
-    if commandExists grub-editenv; then
-      grub-editenv "$grubenv" set next_entry="$entry" && return 0
-    fi
-    if commandExists grub2-editenv; then
-      grub2-editenv "$grubenv" set next_entry="$entry" && return 0
-    fi
-  fi
-
-  return 1
+  # Use an explicit grubenv so the file being verified is the file being set.
+  $editEnvCommand "$grubenv" set next_entry="$entry" || {
+    failHandoff "one-shot schedule command failed for $grubenv"
+    return 1
+  }
+  logHandoff "one-shot schedule result: set next_entry=$entry in $grubenv"
+  verifyGrubOnceBoot "$entry"
 }
+
+function verifyInstallerArtifacts(){
+  local sourceKernel="$1"
+  local sourceInitrd="$2"
+  local targetKernel="$3"
+  local targetInitrd="$4"
+  local sourceKernelSize sourceInitrdSize targetKernelSize targetInitrdSize
+  local sourceKernelSha sourceInitrdSha targetKernelSha targetInitrdSha
+
+  [ -s "$sourceKernel" ] || { failHandoff "installer kernel missing or empty: $sourceKernel"; return 1; }
+  [ -s "$sourceInitrd" ] || { failHandoff "installer initrd missing or empty: $sourceInitrd"; return 1; }
+  [ -s "$targetKernel" ] || { failHandoff "installed kernel missing or empty: $targetKernel"; return 1; }
+  [ -s "$targetInitrd" ] || { failHandoff "installed initrd missing or empty: $targetInitrd"; return 1; }
+
+  sourceKernelSize=`stat -c %s "$sourceKernel"` || return 1
+  sourceInitrdSize=`stat -c %s "$sourceInitrd"` || return 1
+  targetKernelSize=`stat -c %s "$targetKernel"` || return 1
+  targetInitrdSize=`stat -c %s "$targetInitrd"` || return 1
+  [ "$sourceKernelSize" -ge "$INSTALLNET_MIN_KERNEL_SIZE" ] || { failHandoff "installer kernel too small: $sourceKernelSize bytes"; return 1; }
+  [ "$sourceInitrdSize" -ge "$INSTALLNET_MIN_INITRD_SIZE" ] || { failHandoff "installer initrd too small: $sourceInitrdSize bytes"; return 1; }
+  [ "$targetKernelSize" == "$sourceKernelSize" ] || { failHandoff 'installer kernel size changed during copy'; return 1; }
+  [ "$targetInitrdSize" == "$sourceInitrdSize" ] || { failHandoff 'installer initrd size changed during copy'; return 1; }
+  gzip -t "$sourceInitrd" || { failHandoff "installer initrd gzip integrity: $sourceInitrd"; return 1; }
+
+  logHandoff "installer kernel path: $targetKernel"
+  logHandoff "installer initrd path: $targetInitrd"
+  logHandoff "installer kernel size: $targetKernelSize"
+  logHandoff "installer initrd size: $targetInitrdSize"
+  if commandExists sha256sum; then
+    sourceKernelSha=`sha256sum "$sourceKernel" |awk '{print $1}'`
+    sourceInitrdSha=`sha256sum "$sourceInitrd" |awk '{print $1}'`
+    targetKernelSha=`sha256sum "$targetKernel" |awk '{print $1}'`
+    targetInitrdSha=`sha256sum "$targetInitrd" |awk '{print $1}'`
+    logHandoff "installer kernel SHA256: $targetKernelSha"
+    logHandoff "installer initrd SHA256: $targetInitrdSha"
+    [ "$sourceKernelSha" == "$targetKernelSha" ] || { failHandoff 'installer kernel SHA256 mismatch after copy'; return 1; }
+    [ "$sourceInitrdSha" == "$targetInitrdSha" ] || { failHandoff 'installer initrd SHA256 mismatch after copy'; return 1; }
+  else
+    logHandoff '[SKIP] sha256sum not available; using byte comparison'
+    cmp -s "$sourceKernel" "$targetKernel" || { failHandoff 'installer kernel differs after copy'; return 1; }
+    cmp -s "$sourceInitrd" "$targetInitrd" || { failHandoff 'installer initrd differs after copy'; return 1; }
+  fi
+  passHandoff 'installer kernel'
+  passHandoff 'installer initrd'
+}
+
+function getInstallerMenuEntry(){
+  local grubConfig="$1"
+  local marker
+  if [[ "$GRUBVER" == '0' ]]; then
+    marker="--id '${INSTALL_ENTRY_ID}'"
+    awk -v marker="$marker" '
+      index($0, marker) { found=1 }
+      found { print }
+      found && /^[[:space:]]*}/ { exit }
+    ' "$grubConfig"
+  else
+    marker="title '${INSTALL_ENTRY_TITLE}'"
+    awk -v marker="$marker" '
+      index($0, marker) { found=1 }
+      found && printed && /^[[:space:]]*title[[:space:]]/ { exit }
+      found { print; printed=1 }
+    ' "$grubConfig"
+  fi
+}
+
+function verifyGrubConfig(){
+  local grubConfig="${GRUBDIR}/${GRUBFILE}"
+  local kernelPath initrdPath idCount titleCount entryBlock
+
+  [ -s "$grubConfig" ] || { failHandoff "grub config missing or empty: $grubConfig"; return 1; }
+  if [[ "$Type" == 'InBoot' ]]; then
+    kernelPath='/boot/vmlinuz'
+    initrdPath='/boot/initrd.img'
+  else
+    kernelPath='/vmlinuz'
+    initrdPath='/initrd.img'
+  fi
+
+  titleCount=`grep -F -c "${INSTALL_ENTRY_TITLE}" "$grubConfig" || true`
+  [ "$titleCount" -eq '1' ] || { failHandoff "installer menu title count is $titleCount, expected 1"; return 1; }
+  if [[ "$GRUBVER" == '0' ]]; then
+    idCount=`grep -F -c -- "--id '${INSTALL_ENTRY_ID}'" "$grubConfig" || true`
+    [ "$idCount" -eq '1' ] || { failHandoff "installer menu ID count is $idCount, expected 1"; return 1; }
+    grep -E '^[[:space:]]*load_env([[:space:]]|$)' "$grubConfig" >/dev/null || { failHandoff 'grub config does not load its environment block'; return 1; }
+    grep -F 'next_entry' "$grubConfig" >/dev/null || { failHandoff 'grub config does not consume next_entry'; return 1; }
+  fi
+  entryBlock=`getInstallerMenuEntry "$grubConfig"`
+  [ -n "$entryBlock" ] || { failHandoff 'installer menuentry not found'; return 1; }
+  printf '%s\n' "$entryBlock" |grep -F "$kernelPath $BOOT_OPTION" >/dev/null || { failHandoff "installer menuentry kernel/options mismatch: $kernelPath"; return 1; }
+  printf '%s\n' "$entryBlock" |grep -F "$initrdPath" >/dev/null || { failHandoff "installer menuentry initrd mismatch: $initrdPath"; return 1; }
+  logHandoff 'installer grub menuentry:'
+  printf '%s\n' "$entryBlock" >>"$INSTALLNET_HANDOFF_LOG"
+  passHandoff 'grub menuentry'
+}
+
+function verifyGrubSyntax(){
+  local checker=''
+  if [[ "$GRUBVER" != '0' ]]; then
+    logHandoff '[SKIP] grub syntax checker is only applied to GRUB2 configurations'
+    return 0
+  fi
+  if [ "$INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND" == 'none' ]; then
+    checker=''
+  elif [ -n "$INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND" ]; then
+    checker="$INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND"
+  elif commandExists grub-script-check; then
+    checker='grub-script-check'
+  elif commandExists grub2-script-check; then
+    checker='grub2-script-check'
+  fi
+  if [ -z "$checker" ]; then
+    logHandoff '[SKIP] grub-script-check not available'
+    return 0
+  fi
+  $checker "${GRUBDIR}/${GRUBFILE}" >>"$INSTALLNET_HANDOFF_LOG" 2>&1 || {
+    failHandoff "grub syntax check failed: $checker"
+    return 1
+  }
+  passHandoff "grub syntax ($checker)"
+}
+
+function initializeHandoffLog(){
+  mkdir -p "`dirname "$INSTALLNET_HANDOFF_LOG"`" || return 1
+  : >"$INSTALLNET_HANDOFF_LOG" || return 1
+  chmod 600 "$INSTALLNET_HANDOFF_LOG" || return 1
+  logHandoff "timestamp UTC: `date -u '+%Y-%m-%dT%H:%M:%SZ'`"
+  logHandoff "timestamp local: `date '+%Y-%m-%dT%H:%M:%S%z'`"
+  logHandoff "uname: `uname -a`"
+  logHandoff "distribution: `sed -n 's/^PRETTY_NAME=//p' /etc/os-release 2>/dev/null |tr -d '\"'`"
+  [ -d /sys/firmware/efi ] && logHandoff 'boot mode: UEFI' || logHandoff 'boot mode: BIOS/legacy firmware'
+  logHandoff "GRUBDIR=$GRUBDIR"
+  logHandoff "GRUBFILE=$GRUBFILE"
+  logHandoff "GRUBVER=$GRUBVER"
+  logHandoff "INSTALL_ENTRY_TITLE=$INSTALL_ENTRY_TITLE"
+  [[ "$GRUBVER" == '0' ]] && logHandoff "INSTALL_ENTRY_ID=$INSTALL_ENTRY_ID"
+  logHandoff "grubenv path: ${GRUBDIR}/grubenv"
+}
+
+function runHandoffPreflight(){
+  initializeHandoffLog || { echo 'Error! Cannot create installer handoff log.'; return 1; }
+  verifyInstallerArtifacts "$INSTALLNET_SOURCE_KERNEL" "$INSTALLNET_SOURCE_INITRD" "$INSTALLNET_TARGET_KERNEL" "$INSTALLNET_TARGET_INITRD" || return 1
+  verifyGrubConfig || return 1
+  verifyGrubSyntax || return 1
+
+  if [[ "$GRUBVER" == '0' ]]; then
+    [ "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ] || { failHandoff 'GRUB2 one-shot boot is disabled'; return 1; }
+    scheduleGrubOnceBoot "$INSTALL_ENTRY_ID" || return 1
+  else
+    logHandoff '[SKIP] one-shot next_entry verification is not supported for legacy GRUB'
+  fi
+  passHandoff 'handoff preflight'
+}
+
+function finishInstallerHandoff(){
+  runHandoffPreflight || {
+    echo -e "\033[31mError! \033[0minstaller handoff verification failed; reboot is blocked."
+    return 1
+  }
+  sync || { failHandoff 'filesystem sync failed; reboot is blocked'; return 1; }
+  passHandoff 'filesystem sync'
+  sync || { failHandoff 'final filesystem sync failed; reboot is blocked'; return 1; }
+
+  if [[ "$INSTALLNET_NO_REBOOT" == '1' ]]; then
+    logHandoff '[PASS] installer handoff verified; reboot skipped by --no-reboot'
+    return 0
+  fi
+
+  logHandoff '[PASS] installer handoff verified, rebooting'
+  sync
+  if ! reboot; then
+    failHandoff 'reboot command returned an error'
+    return 1
+  fi
+}
+# INSTALLNET_HANDOFF_HELPERS_END
 
 if [[ "$loaderMode" == "0" ]]; then
   Grub=`getGrub "/boot"`
@@ -566,7 +806,7 @@ INSTALL_ENTRY_TITLE="Install OS [$DIST $VER]"
     }
   fi
   [ ! -f /tmp/grub.new ] && echo "Error! $GRUBFILE. " && exit 1;
-  sed -i "/menuentry.*/c\menuentry\ \'${INSTALL_ENTRY_TITLE}\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ \{" /tmp/grub.new
+  sed -i "/menuentry.*/c\menuentry\ \'${INSTALL_ENTRY_TITLE}\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ --id\ \'${INSTALL_ENTRY_ID}\'\ \{" /tmp/grub.new
   sed -i "/echo.*Loading/d" /tmp/grub.new;
   INSERTGRUB="$(awk '/menuentry /{print NR}' $GRUBDIR/$GRUBFILE|head -n 1)"
 }
@@ -825,28 +1065,15 @@ fi
 find . | cpio -H newc --create --verbose | gzip -9 > /tmp/initrd.img;
 
 if [[ "$loaderMode" == "0" ]]; then
-  cp -f /tmp/initrd.img /boot/initrd.img || sudo cp -f /tmp/initrd.img /boot/initrd.img
-  cp -f /tmp/vmlinuz /boot/vmlinuz || sudo cp -f /tmp/vmlinuz /boot/vmlinuz
+  initializeHandoffLog || { echo -e "\033[31mError! \033[0mcannot create installer handoff log."; exit 1; }
+  gzip -t /tmp/initrd.img || { failHandoff 'installer initrd gzip integrity check failed; reboot is blocked'; exit 1; }
+  cp -f /tmp/initrd.img /boot/initrd.img || { failHandoff 'failed to copy installer initrd; reboot is blocked'; exit 1; }
+  cp -f /tmp/vmlinuz /boot/vmlinuz || { failHandoff 'failed to copy installer kernel; reboot is blocked'; exit 1; }
 
   chown root:root $GRUBDIR/$GRUBFILE
   chmod 444 $GRUBDIR/$GRUBFILE
 
-  if [[ "$GRUBVER" == '0' ]] && [[ "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]]; then
-    if scheduleGrubOnceBoot "$INSTALL_ENTRY_TITLE"; then
-      echo -e "\033[32mInfo:\033[0m scheduled one-shot boot entry: $INSTALL_ENTRY_TITLE"
-    else
-      echo -e "\033[31mError! \033[0mfailed to set one-shot boot entry: $INSTALL_ENTRY_TITLE"
-      [[ "$INSTALLNET_ABORT_ONESHOT_FAILURE" == '1' ]] && exit 1
-    fi
-  fi
-
-  if [[ "$INSTALLNET_NO_REBOOT" == '1' ]]; then
-    echo -e "\033[33mInfo:\033[0m reboot skipped because --no-reboot was requested."
-    exit 0
-  fi
-
-  sleep 3
-  reboot || sudo reboot >/dev/null 2>&1
+  finishInstallerHandoff || exit 1
 else
   rm -rf "$HOME/loader"
   mkdir -p "$HOME/loader"

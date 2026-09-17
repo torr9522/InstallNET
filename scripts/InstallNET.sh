@@ -51,7 +51,6 @@ export INSTALLNET_SOURCE_INITRD="${INSTALLNET_SOURCE_INITRD:-/tmp/initrd.img}"
 export INSTALLNET_TARGET_KERNEL="${INSTALLNET_TARGET_KERNEL:-/boot/vmlinuz}"
 export INSTALLNET_TARGET_INITRD="${INSTALLNET_TARGET_INITRD:-/boot/initrd.img}"
 export INSTALLNET_GRUB_EDITENV_COMMAND="${INSTALLNET_GRUB_EDITENV_COMMAND:-}"
-export INSTALLNET_GRUB_REBOOT_COMMAND="${INSTALLNET_GRUB_REBOOT_COMMAND:-}"
 export INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND="${INSTALLNET_GRUB_SCRIPT_CHECK_COMMAND:-}"
 
 while [[ $# -ge 1 ]]; do
@@ -363,40 +362,18 @@ function verifyGrubOnceBoot(){
 function scheduleGrubOnceBoot(){
   local entry="$1"
   local grubenv="${GRUBDIR}/grubenv"
-  local editEnvCommand scheduleMethod scheduleResult
+  local editEnvCommand
 
   [ -n "$entry" ] || { failHandoff 'one-shot entry is empty'; return 1; }
   [ -f "$grubenv" ] || { failHandoff "one-shot grubenv not found: $grubenv"; return 1; }
   editEnvCommand=`getGrubEditEnvCommand` || { failHandoff 'one-shot grub-editenv command not available'; return 1; }
 
-  # Clear the selected grubenv first so a stale value cannot make verification pass.
-  $editEnvCommand "$grubenv" unset next_entry || {
-    failHandoff "cannot clear the selected grubenv before scheduling: $grubenv"
-    return 1
-  }
-
-  if [ -n "$INSTALLNET_GRUB_REBOOT_COMMAND" ]; then
-    $INSTALLNET_GRUB_REBOOT_COMMAND "$entry"
-    scheduleResult=$?
-    scheduleMethod="$INSTALLNET_GRUB_REBOOT_COMMAND"
-  elif [ "`basename "$GRUBDIR"`" == 'grub' ] && commandExists grub-reboot; then
-    grub-reboot --boot-directory="`dirname "$GRUBDIR"`" "$entry"
-    scheduleResult=$?
-    scheduleMethod='grub-reboot'
-  elif [ "`basename "$GRUBDIR"`" == 'grub2' ] && commandExists grub2-reboot; then
-    grub2-reboot "$entry"
-    scheduleResult=$?
-    scheduleMethod='grub2-reboot'
-  else
-    $editEnvCommand "$grubenv" set next_entry="$entry"
-    scheduleResult=$?
-    scheduleMethod="$editEnvCommand (explicit grubenv)"
-  fi
-  [ "$scheduleResult" -eq '0' ] || {
+  # Use an explicit grubenv so the file being verified is the file being set.
+  $editEnvCommand "$grubenv" set next_entry="$entry" || {
     failHandoff "one-shot schedule command failed for $grubenv"
     return 1
   }
-  logHandoff "one-shot schedule result: $scheduleMethod requested next_entry=$entry"
+  logHandoff "one-shot schedule result: set next_entry=$entry in $grubenv"
   verifyGrubOnceBoot "$entry"
 }
 

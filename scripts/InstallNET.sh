@@ -42,6 +42,8 @@ export INSTALL_ENTRY_TITLE=''
 export INSTALLNET_FORCE_GRUB_ONCE="${INSTALLNET_FORCE_GRUB_ONCE:-1}"
 export INSTALLNET_ABORT_ONESHOT_FAILURE="${INSTALLNET_ABORT_ONESHOT_FAILURE:-1}"
 export INSTALLNET_NO_REBOOT="${INSTALLNET_NO_REBOOT:-0}"
+export INSTALLNET_USE_CUSTOM_GRUB='0'
+export INSTALLNET_HANDOFF_LOG='/var/log/installnet-handoff.log'
 
 while [[ $# -ge 1 ]]; do
   case $1 in
@@ -262,6 +264,12 @@ function diskType(){
 
 function getGrub(){
   Boot="${1:-/boot}"
+  for folder in "$Boot/grub" "$Boot/grub2"; do
+    if [ -f "$folder/grub.cfg" ]; then
+      echo "${folder}:grub.cfg:0"
+      return
+    fi
+  done
   folder=`find "$Boot" -type d -name "grub*" 2>/dev/null |head -n1`
   [ -n "$folder" ] || return
   fileName=`ls -1 "$folder" 2>/dev/null |grep '^grub.conf$\|^grub.cfg$'`
@@ -313,6 +321,156 @@ function scheduleGrubOnceBoot(){
   return 1
 }
 
+function logInstallnetHandoff(){
+  printf '%s\n' "$*" |tee -a "$INSTALLNET_HANDOFF_LOG"
+}
+
+function failInstallnetHandoff(){
+  logInstallnetHandoff "[FAIL] $*; reboot blocked"
+  return 1
+}
+
+function prepareInstallnetGrub(){
+  local config="$GRUBDIR/$GRUBFILE"
+
+  if ! commandExists update-grub || ! update-grub; then
+    failInstallnetHandoff 'regenerate GRUB configuration' || return 1
+  fi
+  if ! grep -Eq 'source[[:space:]]+.*custom\.cfg' "$config" ||
+     ! grep -q 'load_env' "$config"; then
+    failInstallnetHandoff 'GRUB configuration does not load custom.cfg and grubenv' || return 1
+  fi
+  logInstallnetHandoff '[PASS] GRUB loads custom.cfg and grubenv'
+}
+
+function writeInstallnetCustomEntry(){
+  local config="$GRUBDIR/custom.cfg" temp
+  local start='### BEGIN InstallNET installer ###'
+  local end='### END InstallNET installer ###'
+
+  if [ -f "$config" ] &&
+     { [ "$(grep -Fxc "$start" "$config")" != "$(grep -Fxc "$end" "$config")" ] ||
+       [ "$(grep -Fxc "$start" "$config")" -gt 1 ]; }; then
+    failInstallnetHandoff 'unbalanced InstallNET markers in custom.cfg' || return 1
+  fi
+  temp=$(mktemp "${config}.XXXXXX") || return 1
+  if [ -f "$config" ]; then
+    awk -v start="$start" -v end="$end" '
+      $0 == start { skipping = 1; next }
+      $0 == end { skipping = 0; next }
+      !skipping { print }
+    ' "$config" >"$temp" || { rm -f "$temp"; return 1; }
+  fi
+  cat >>"$temp" <<EOF
+$start
+menuentry '${INSTALL_ENTRY_TITLE}' --id installnet-once {
+    search --no-floppy --file --set=root ${GRUB_KERNEL_PATH}
+    linux ${GRUB_KERNEL_PATH} ${BOOT_OPTION}
+    initrd ${GRUB_INITRD_PATH}
+}
+$end
+EOF
+  if [ -f "$config" ]; then
+    chmod --reference="$config" "$temp" || { rm -f "$temp"; return 1; }
+  else
+    chmod 644 "$temp" || { rm -f "$temp"; return 1; }
+  fi
+  mv -f "$temp" "$config" || { rm -f "$temp"; return 1; }
+  logInstallnetHandoff "[PASS] installer menuentry in $config"
+}
+
+function verifyInstallnetArtifacts(){
+  local source target label sourceSize targetSize sourceSha targetSha
+  local kernelSource="${1:-/tmp/vmlinuz}" initrdSource="${2:-/tmp/initrd.img}"
+  local kernelTarget="${3:-/boot/vmlinuz}" initrdTarget="${4:-/boot/initrd.img}"
+
+  if [ ! -s "$initrdSource" ] || ! gzip -t "$initrdSource"; then
+    failInstallnetHandoff 'installer initrd gzip integrity'; return 1
+  fi
+  for label in kernel initrd; do
+    if [ "$label" == kernel ]; then source="$kernelSource"; target="$kernelTarget"
+    else source="$initrdSource"; target="$initrdTarget"; fi
+    if [ ! -s "$source" ] || [ ! -s "$target" ]; then
+      failInstallnetHandoff "installer $label missing or too small" || return 1
+    fi
+    sourceSize=$(stat -c %s "$source") || return 1
+    targetSize=$(stat -c %s "$target") || return 1
+    if [ "$sourceSize" -lt 1048576 ] || [ "$targetSize" != "$sourceSize" ]; then
+      failInstallnetHandoff "installer $label size mismatch" || return 1
+    fi
+    if commandExists sha256sum; then
+      sourceSha=$(sha256sum "$source") || { failInstallnetHandoff "installer $label source SHA256"; return 1; }
+      targetSha=$(sha256sum "$target") || { failInstallnetHandoff "installer $label target SHA256"; return 1; }
+      if [ "${sourceSha%% *}" != "${targetSha%% *}" ]; then
+        failInstallnetHandoff "installer $label SHA256 mismatch" || return 1
+      fi
+      logInstallnetHandoff "$label: $target $targetSize bytes SHA256 ${targetSha%% *}"
+    elif ! cmp -s "$source" "$target"; then
+      failInstallnetHandoff "installer $label copy mismatch" || return 1
+    fi
+    logInstallnetHandoff "[PASS] installer $label"
+  done
+}
+
+function verifyInstallnetGrub(){
+  local entry="$GRUBDIR/custom.cfg" config="$GRUBDIR/$GRUBFILE" check
+
+  if [ "$(grep -Fc "menuentry '${INSTALL_ENTRY_TITLE}' --id installnet-once {" "$entry")" != 1 ] ||
+     ! grep -Fq "search --no-floppy --file --set=root ${GRUB_KERNEL_PATH}" "$entry" ||
+     ! grep -Fq "linux ${GRUB_KERNEL_PATH} ${BOOT_OPTION}" "$entry" ||
+     ! grep -Fq "initrd ${GRUB_INITRD_PATH}" "$entry" ||
+     ! grep -Eq 'source[[:space:]]+.*custom\.cfg' "$config"; then
+    failInstallnetHandoff 'GRUB installer entry or custom.cfg source' || return 1
+  fi
+  logInstallnetHandoff '[PASS] GRUB installer menuentry'
+  if commandExists grub-script-check; then check=grub-script-check
+  elif commandExists grub2-script-check; then check=grub2-script-check
+  else logInstallnetHandoff '[SKIP] GRUB syntax checker unavailable'; return 0; fi
+  if ! "$check" "$config" || ! "$check" "$entry"; then
+    failInstallnetHandoff 'GRUB configuration syntax' || return 1
+  fi
+  logInstallnetHandoff '[PASS] GRUB configuration syntax'
+}
+
+function scheduleVerifiedInstallnetBoot(){
+  local envfile="$GRUBDIR/grubenv" envlist next
+
+  if [ ! -f "$envfile" ] || ! commandExists grub-reboot || ! commandExists grub-editenv; then
+    failInstallnetHandoff 'GRUB one-shot commands or grubenv unavailable' || return 1
+  fi
+  if ! grub-reboot "$INSTALL_ENTRY_TITLE"; then
+    failInstallnetHandoff 'grub-reboot failed' || return 1
+  fi
+  envlist=$(grub-editenv "$envfile" list 2>/dev/null) || {
+    failInstallnetHandoff 'cannot read grubenv' || return 1
+  }
+  next=$(printf '%s\n' "$envlist" |sed -n 's/^next_entry=//p')
+  logInstallnetHandoff "grubenv: $envfile next_entry=${next:-<empty>}"
+  if [ "$next" != "$INSTALL_ENTRY_TITLE" ]; then
+    failInstallnetHandoff 'GRUB next_entry differs from installer menuentry' || return 1
+  fi
+  logInstallnetHandoff '[PASS] GRUB one-shot next_entry'
+}
+
+function runInstallnetHandoff(){
+  verifyInstallnetArtifacts || return 1
+  writeInstallnetCustomEntry || return 1
+  verifyInstallnetGrub || return 1
+  scheduleVerifiedInstallnetBoot || return 1
+  sync || { failInstallnetHandoff 'filesystem sync'; return 1; }
+  logInstallnetHandoff '[PASS] handoff preflight and filesystem sync'
+}
+
+function finishInstallnetHandoff(){
+  runInstallnetHandoff || return 1
+  if [[ "$INSTALLNET_NO_REBOOT" == '1' ]]; then
+    logInstallnetHandoff '[PASS] --no-reboot: reboot skipped'
+    return 0
+  fi
+  logInstallnetHandoff '[PASS] installer handoff verified, rebooting'
+  reboot || { failInstallnetHandoff 'reboot command'; return 1; }
+}
+
 if [[ "$loaderMode" == "0" ]]; then
   Grub=`getGrub "/boot"`
   [ -z "$Grub" ] && echo -ne "Error! Not Found grub.\n" && exit 1;
@@ -323,6 +481,17 @@ fi
 
 [ -n "$Relese" ] || Relese='Debian'
 linux_relese=$(echo "$Relese" |sed 's/\ //g' |sed -r 's/(.*)/\L\1/')
+if [[ "$loaderMode" == '0' && "$GRUBDIR" == '/boot/grub' && "$GRUBVER" == '0' &&
+      "$linux_relese" == 'debian' && "$ddMode" == '0' &&
+      "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]]; then
+  INSTALLNET_USE_CUSTOM_GRUB='1'
+  : >"$INSTALLNET_HANDOFF_LOG" || exit 1
+  chmod 600 "$INSTALLNET_HANDOFF_LOG"
+  logInstallnetHandoff "UTC: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  logInstallnetHandoff "system: $(uname -a)"
+  logInstallnetHandoff "GRUBDIR=$GRUBDIR GRUBFILE=$GRUBFILE GRUBVER=$GRUBVER"
+  prepareInstallnetGrub || exit 1
+fi
 clear && echo -e "\n\033[36m# Check Dependence\033[0m\n"
 
 if [[ "$ddMode" == '1' ]]; then
@@ -531,9 +700,11 @@ fi
 if [[ "$loaderMode" == "0" ]]; then
   [[ ! -f "${GRUBDIR}/${GRUBFILE}" ]] && echo "Error! Not Found ${GRUBFILE}. " && exit 1;
 
-  [[ ! -f "${GRUBDIR}/${GRUBFILE}.old" ]] && [[ -f "${GRUBDIR}/${GRUBFILE}.bak" ]] && mv -f "${GRUBDIR}/${GRUBFILE}.bak" "${GRUBDIR}/${GRUBFILE}.old";
-  mv -f "${GRUBDIR}/${GRUBFILE}" "${GRUBDIR}/${GRUBFILE}.bak";
-  [[ -f "${GRUBDIR}/${GRUBFILE}.old" ]] && cat "${GRUBDIR}/${GRUBFILE}.old" >"${GRUBDIR}/${GRUBFILE}" || cat "${GRUBDIR}/${GRUBFILE}.bak" >"${GRUBDIR}/${GRUBFILE}";
+  if [[ "$INSTALLNET_USE_CUSTOM_GRUB" != '1' ]]; then
+    [[ ! -f "${GRUBDIR}/${GRUBFILE}.old" ]] && [[ -f "${GRUBDIR}/${GRUBFILE}.bak" ]] && mv -f "${GRUBDIR}/${GRUBFILE}.bak" "${GRUBDIR}/${GRUBFILE}.old";
+    mv -f "${GRUBDIR}/${GRUBFILE}" "${GRUBDIR}/${GRUBFILE}.bak";
+    [[ -f "${GRUBDIR}/${GRUBFILE}.old" ]] && cat "${GRUBDIR}/${GRUBFILE}.old" >"${GRUBDIR}/${GRUBFILE}" || cat "${GRUBDIR}/${GRUBFILE}.bak" >"${GRUBDIR}/${GRUBFILE}";
+  fi
 else
   GRUBVER='-1'
 fi
@@ -541,6 +712,14 @@ fi
 INSTALL_ENTRY_TITLE="Install OS [$DIST $VER]"
 
 [[ "$GRUBVER" == '0' ]] && {
+  if [[ "$INSTALLNET_USE_CUSTOM_GRUB" == '1' ]]; then
+    ExistingKernel=$(awk '$1 ~ /^linux(efi|16)?$/ { print $2; exit }' "$GRUBDIR/$GRUBFILE")
+    case "$ExistingKernel" in
+      /boot/*) Type='InBoot' ;;
+      /*) Type='NoBoot' ;;
+      *) failInstallnetHandoff 'cannot determine GRUB installer file paths'; exit 1 ;;
+    esac
+  else
   READGRUB='/tmp/grub.read'
   cat $GRUBDIR/$GRUBFILE |sed -n '1h;1!H;$g;s/\n/%%%%%%%/g;$p' |grep -om 1 'menuentry\ [^{]*{[^}]*}%%%%%%%' |sed 's/%%%%%%%/\n/g' >$READGRUB
   LoadNum="$(cat $READGRUB |grep -c 'menuentry ')"
@@ -569,6 +748,7 @@ INSTALL_ENTRY_TITLE="Install OS [$DIST $VER]"
   sed -i "/menuentry.*/c\menuentry\ \'${INSTALL_ENTRY_TITLE}\'\ --class debian\ --class\ gnu-linux\ --class\ gnu\ --class\ os\ \{" /tmp/grub.new
   sed -i "/echo.*Loading/d" /tmp/grub.new;
   INSERTGRUB="$(awk '/menuentry /{print NR}' $GRUBDIR/$GRUBFILE|head -n 1)"
+  fi
 }
 
 [[ "$GRUBVER" == '1' ]] && {
@@ -583,12 +763,14 @@ INSTALL_ENTRY_TITLE="Install OS [$DIST $VER]"
 }
 
 if [[ "$loaderMode" == "0" ]]; then
+  if [[ "$INSTALLNET_USE_CUSTOM_GRUB" != '1' ]]; then
   [[ -n "$(grep 'linux.*/\|kernel.*/' /tmp/grub.new |awk '{print $2}' |tail -n 1 |grep '^/boot/')" ]] && Type='InBoot' || Type='NoBoot';
 
   LinuxKernel="$(grep 'linux.*/\|kernel.*/' /tmp/grub.new |awk '{print $1}' |head -n 1)";
   [[ -z "$LinuxKernel" ]] && echo "Error! read grub config! " && exit 1;
   LinuxIMG="$(grep 'initrd.*/' /tmp/grub.new |awk '{print $1}' |tail -n 1)";
   [ -z "$LinuxIMG" ] && sed -i "/$LinuxKernel.*\//a\\\tinitrd\ \/" /tmp/grub.new && LinuxIMG='initrd';
+  fi
 
   [[ "$setInterfaceName" == "1" ]] && Add_OPTION="net.ifnames=0 biosdevname=0" || Add_OPTION=""
   [[ "$setIPv6" == "1" ]] && Add_OPTION="$Add_OPTION ipv6.disable=1"
@@ -603,6 +785,11 @@ if [[ "$loaderMode" == "0" ]]; then
   
   [ -n "$setConsole" ] && BOOT_OPTION="$BOOT_OPTION --- console=$setConsole"
 
+  if [[ "$INSTALLNET_USE_CUSTOM_GRUB" == '1' ]]; then
+    [[ "$Type" == 'InBoot' ]] && GRUB_KERNEL_PATH='/boot/vmlinuz' && GRUB_INITRD_PATH='/boot/initrd.img'
+    [[ "$Type" == 'NoBoot' ]] && GRUB_KERNEL_PATH='/vmlinuz' && GRUB_INITRD_PATH='/initrd.img'
+    logInstallnetHandoff "entry=$INSTALL_ENTRY_TITLE kernel=$GRUB_KERNEL_PATH initrd=$GRUB_INITRD_PATH"
+  else
   [[ "$Type" == 'InBoot' ]] && {
     sed -i "/$LinuxKernel.*\//c\\\t$LinuxKernel\\t\/boot\/vmlinuz $BOOT_OPTION" /tmp/grub.new;
     sed -i "/$LinuxIMG.*\//c\\\t$LinuxIMG\\t\/boot\/initrd.img" /tmp/grub.new;
@@ -617,6 +804,7 @@ if [[ "$loaderMode" == "0" ]]; then
   
   sed -i ''${INSERTGRUB}'i\\n' $GRUBDIR/$GRUBFILE;
   sed -i ''${INSERTGRUB}'r /tmp/grub.new' $GRUBDIR/$GRUBFILE;
+  fi
 fi
 
 [[ -d /tmp/boot ]] && rm -rf /tmp/boot;
@@ -827,6 +1015,11 @@ find . | cpio -H newc --create --verbose | gzip -9 > /tmp/initrd.img;
 if [[ "$loaderMode" == "0" ]]; then
   cp -f /tmp/initrd.img /boot/initrd.img || sudo cp -f /tmp/initrd.img /boot/initrd.img
   cp -f /tmp/vmlinuz /boot/vmlinuz || sudo cp -f /tmp/vmlinuz /boot/vmlinuz
+
+  if [[ "$INSTALLNET_USE_CUSTOM_GRUB" == '1' ]]; then
+    finishInstallnetHandoff
+    exit $?
+  fi
 
   chown root:root $GRUBDIR/$GRUBFILE
   chmod 444 $GRUBDIR/$GRUBFILE

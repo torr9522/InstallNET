@@ -195,6 +195,31 @@ function dependence(){
   fi
 }
 
+function probeInstallerResource(){
+  local url="$1" attempt status=0
+  for attempt in 1 2; do
+    if wget --no-check-certificate --spider --tries=1 --timeout=15 -o /dev/null "$url"; then
+      return 0
+    else
+      status=$?
+    fi
+    [[ "$status" == 4 ]] || break
+  done
+  if [[ "$status" == 4 ]]; then
+    if wget --inet4-only --no-check-certificate --spider --tries=1 --timeout=15 -o /dev/null "$url"; then
+      return 0
+    else
+      status=$?
+    fi
+  fi
+  if [[ "$status" == 8 ]]; then
+    printf 'RESOURCE_NOT_FOUND: %s\n' "$url" >&2
+  else
+    printf 'NETWORK_ERROR (wget %s): %s\n' "$status" "$url" >&2
+  fi
+  return 1
+}
+
 function selectMirror(){
   [ $# -ge 3 ] || exit 1
   Relese=$(echo "$1" |sed -r 's/(.*)/\L\1/')
@@ -213,13 +238,21 @@ function selectMirror(){
   declare -A MirrorBackup
   MirrorBackup=(["debian0"]="" ["debian1"]="http://deb.debian.org/debian" ["debian2"]="http://archive.debian.org/debian" ["ubuntu0"]="" ["ubuntu1"]="http://archive.ubuntu.com/ubuntu" ["ubuntu2"]="http://ports.ubuntu.com" ["centos0"]="" ["centos1"]="http://mirror.centos.org/centos" ["centos2"]="http://vault.centos.org")
   echo "$New" |grep -q '^http://\|^https://\|^ftp://' && MirrorBackup[${Relese}0]="$New"
-  for mirror in $(echo "${!MirrorBackup[@]}" |sed 's/\ /\n/g' |sort -n |grep "^$Relese")
+  for mirror in "${Relese}0" "${Relese}1" "${Relese}2"
     do
       Current="${MirrorBackup[$mirror]}"
       [ -n "$Current" ] || continue
       MirrorURL=`echo "$TEMP" |sed "s#SUB_MIRROR#${Current}#g"`
-      wget --no-check-certificate --spider --timeout=3 -o /dev/null "$MirrorURL"
-      [ $? -eq 0 ] && mirrorStatus=1 && break
+      if [[ "$Relese" == debian ]]; then
+        if probeInstallerResource "$MirrorURL" &&
+           probeInstallerResource "${MirrorURL%initrd.gz}linux"; then
+          mirrorStatus=1
+          break
+        fi
+      elif wget --no-check-certificate --spider --timeout=3 -o /dev/null "$MirrorURL"; then
+        mirrorStatus=1
+        break
+      fi
     done
   [ $mirrorStatus -eq 1 ] && echo "$Current" || exit 1
 }
@@ -671,7 +704,7 @@ if [[ -z "$LinuxMirror" ]]; then
   exit 1;
 fi
 
-if [[ "$SpikCheckDIST" == '0' ]]; then
+if [[ "$SpikCheckDIST" == '0' && "$Relese" != 'Debian' ]]; then
   DistsList="$(wget --no-check-certificate -qO- "$LinuxMirror/dists/" |grep -o 'href=.*/"' |cut -d'"' -f2 |sed '/-\|old\|Debian\|experimental\|stable\|test\|sid\|devel/d' |grep '^[^/]' |sed -n '1h;1!H;$g;s/\n//g;s/\//\;/g;$p')";
   for CheckDEB in `echo "$DistsList" |sed 's/;/\n/g'`
     do
@@ -726,10 +759,23 @@ echo -e "\n[\033[33m$Relese\033[0m] [\033[33m$DIST\033[0m] [\033[33m$VER\033[0m]
 
 if [[ "$linux_relese" == 'debian' ]] || [[ "$linux_relese" == 'ubuntu' ]]; then
   [ "$DIST" == "focal" ] && legacy="legacy-" || legacy=""
-  wget --no-check-certificate -qO '/tmp/initrd.img' "${LinuxMirror}/dists/${DIST}/main/installer-${VER}/current/${legacy}images/netboot/${linux_relese}-installer/${VER}/initrd.gz"
-  [[ $? -ne '0' ]] && echo -ne "\033[31mError! \033[0mDownload 'initrd.img' for \033[33m$linux_relese\033[0m failed! \n" && exit 1
-  wget --no-check-certificate -qO '/tmp/vmlinuz' "${LinuxMirror}/dists/${DIST}${inUpdate}/main/installer-${VER}/current/${legacy}images/netboot/${linux_relese}-installer/${VER}/linux"
-  [[ $? -ne '0' ]] && echo -ne "\033[31mError! \033[0mDownload 'vmlinuz' for \033[33m$linux_relese\033[0m failed! \n" && exit 1
+  if [[ "$linux_relese" == 'debian' ]]; then
+    if ! wget --no-check-certificate --tries=2 --timeout=30 -qO '/tmp/initrd.img' "${LinuxMirror}/dists/${DIST}/main/installer-${VER}/current/${legacy}images/netboot/${linux_relese}-installer/${VER}/initrd.gz" ||
+       [[ ! -s /tmp/initrd.img ]] || ! gzip -t /tmp/initrd.img; then
+      echo 'Error: Debian installer initrd download or integrity check failed.' >&2
+      exit 1
+    fi
+    if ! wget --no-check-certificate --tries=2 --timeout=30 -qO '/tmp/vmlinuz' "${LinuxMirror}/dists/${DIST}${inUpdate}/main/installer-${VER}/current/${legacy}images/netboot/${linux_relese}-installer/${VER}/linux" ||
+       [[ ! -s /tmp/vmlinuz ]]; then
+      echo 'Error: Debian installer kernel download failed.' >&2
+      exit 1
+    fi
+  else
+    wget --no-check-certificate -qO '/tmp/initrd.img' "${LinuxMirror}/dists/${DIST}/main/installer-${VER}/current/${legacy}images/netboot/${linux_relese}-installer/${VER}/initrd.gz"
+    [[ $? -ne '0' ]] && echo -ne "\033[31mError! \033[0mDownload 'initrd.img' for \033[33m$linux_relese\033[0m failed! \n" && exit 1
+    wget --no-check-certificate -qO '/tmp/vmlinuz' "${LinuxMirror}/dists/${DIST}${inUpdate}/main/installer-${VER}/current/${legacy}images/netboot/${linux_relese}-installer/${VER}/linux"
+    [[ $? -ne '0' ]] && echo -ne "\033[31mError! \033[0mDownload 'vmlinuz' for \033[33m$linux_relese\033[0m failed! \n" && exit 1
+  fi
   MirrorHost="$(echo "$LinuxMirror" |awk -F'://|/' '{print $2}')";
   MirrorFolder="$(echo "$LinuxMirror" |awk -F''${MirrorHost}'' '{print $2}')";
   [ -n "$MirrorFolder" ] || MirrorFolder="/"

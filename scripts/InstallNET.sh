@@ -302,6 +302,19 @@ function getDisk(){
   [ $? -eq 0 ] && echo "$disks" || echo "/dev/$disks"
 }
 
+function getRootDisk(){
+  local rootSource disks
+  rootSource=$(findmnt -n -o SOURCE /) || return 1
+  rootSource=${rootSource%%\[*}
+  [[ "$rootSource" == /dev/* ]] || return 1
+  disks=$(lsblk -srnpo NAME,TYPE -- "$rootSource" | awk '$2 == "disk" { seen[$1] = 1 } END { for (disk in seen) print disk }') || return 1
+  [[ "$disks" =~ ^/dev/[a-zA-Z0-9._/-]+$ ]] || {
+    printf 'Error: root filesystem does not resolve to exactly one physical disk\n' >&2
+    return 1
+  }
+  printf '%s\n' "$disks"
+}
+
 function diskType(){
   echo `udevadm info --query all "$1" 2>/dev/null |grep 'ID_PART_TABLE_TYPE' |cut -d'=' -f2`
 }
@@ -569,7 +582,15 @@ fi
 [[ -n "$tmpWORD" ]] && myPASSWORD=`openssl passwd -1 "$tmpWORD"`;
 [[ -z "$myPASSWORD" ]] && myPASSWORD=`openssl passwd -1 "Pwd@Debian11"`;
 
-tempDisk=`getDisk`; [ -n "$tempDisk" ] && IncDisk="$tempDisk"
+if [[ "$linux_relese" == 'debian' && "$ddMode" == '0' && "$loaderMode" == '0' ]]; then
+  dependence findmnt
+  IncDisk=$(getRootDisk) || {
+    echo 'Error: cannot safely identify the disk backing /; refusing unattended partitioning.' >&2
+    exit 1
+  }
+else
+  tempDisk=`getDisk`; [ -n "$tempDisk" ] && IncDisk="$tempDisk"
+fi
 
 case `uname -m` in aarch64|arm64) VER="arm64";; x86|i386|i686) VER="i386";; x86_64|amd64) VER="amd64";; *) VER="";; esac
 tmpVER="$(echo "$tmpVER" |sed -r 's/(.*)/\L\1/')";
@@ -1006,6 +1027,10 @@ WinRDP(){
 [[ "$ddMode" == '0' ]] && {
   sed -i '/anna-install/d' /tmp/boot/preseed.cfg
   sed -i 's/wget.*\/sbin\/reboot\;\ //g' /tmp/boot/preseed.cfg
+  if [[ "$linux_relese" == 'debian' && "$loaderMode" == '0' ]]; then
+    sed -i "/^d-i partman\/early_command /c\\d-i partman/early_command string list-devices disk | grep -Fxq -- '$IncDisk' && debconf-set partman-auto/disk '$IncDisk'" /tmp/boot/preseed.cfg
+    echo "d-i partman-auto/disk string $IncDisk" >> /tmp/boot/preseed.cfg
+  fi
 }
 
 elif [[ "$linux_relese" == 'centos' ]]; then

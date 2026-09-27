@@ -348,6 +348,17 @@ function getRootDisk(){
   printf '%s\n' "$disks"
 }
 
+function applyDebianP1Preseed(){
+  local preseed="$1"
+  [[ "$linux_relese" == 'debian' && "$ddMode" == '0' && "$loaderMode" == '0' ]] || return 0
+
+  if [[ "$setNet" == '0' && "$INSTALL_USE_DHCP" == '1' ]]; then
+    sed -i '/netcfg\/disable_autoconfig/d; /netcfg\/dhcp_failed/d; /netcfg\/dhcp_options/d; /netcfg\/get_ipaddress/d; /netcfg\/get_netmask/d; /netcfg\/get_gateway/d; /netcfg\/get_nameservers/d; /netcfg\/confirm_static/d' "$preseed"
+  fi
+  sed -i "/^d-i partman\/early_command /c\\d-i partman/early_command string list-devices disk | grep -Fxq -- '$IncDisk' && debconf-set partman-auto/disk '$IncDisk'" "$preseed"
+  printf 'd-i partman-auto/disk string %s\n' "$IncDisk" >> "$preseed"
+}
+
 function diskType(){
   echo `udevadm info --query all "$1" 2>/dev/null |grep 'ID_PART_TABLE_TYPE' |cut -d'=' -f2`
 }
@@ -1044,9 +1055,6 @@ if [[ "$linux_relese" == 'debian' ]]; then
   sed -i '/pkgsel\/update-policy/d' /tmp/boot/preseed.cfg
   sed -i 's/umount\ \/media.*true\;\ //g' /tmp/boot/preseed.cfg
   [[ -f '/tmp/firmware.cpio.gz' ]] && gzip -d < /tmp/firmware.cpio.gz | cpio --extract --verbose --make-directories --no-absolute-filenames >>/dev/null 2>&1
-  if [[ "$ddMode" == '0' && "$setNet" == '0' && "$INSTALL_USE_DHCP" == '1' ]]; then
-    sed -i '/netcfg\/disable_autoconfig/d; /netcfg\/dhcp_failed/d; /netcfg\/dhcp_options/d; /netcfg\/get_ipaddress/d; /netcfg\/get_netmask/d; /netcfg\/get_gateway/d; /netcfg\/get_nameservers/d; /netcfg\/confirm_static/d' /tmp/boot/preseed.cfg
-  fi
 else
   sed -i '/d-i\ grub-installer\/force-efi-extra-removable/d' /tmp/boot/preseed.cfg
 fi
@@ -1071,10 +1079,7 @@ WinRDP(){
 [[ "$ddMode" == '0' ]] && {
   sed -i '/anna-install/d' /tmp/boot/preseed.cfg
   sed -i 's/wget.*\/sbin\/reboot\;\ //g' /tmp/boot/preseed.cfg
-  if [[ "$linux_relese" == 'debian' && "$loaderMode" == '0' ]]; then
-    sed -i "/^d-i partman\/early_command /c\\d-i partman/early_command string list-devices disk | grep -Fxq -- '$IncDisk' && debconf-set partman-auto/disk '$IncDisk'" /tmp/boot/preseed.cfg
-    echo "d-i partman-auto/disk string $IncDisk" >> /tmp/boot/preseed.cfg
-  fi
+  applyDebianP1Preseed /tmp/boot/preseed.cfg
 }
 
 elif [[ "$linux_relese" == 'centos' ]]; then

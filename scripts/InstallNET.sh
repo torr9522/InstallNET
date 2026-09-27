@@ -238,17 +238,61 @@ function netmask() {
   echo "$m"
 }
 
-function getInterface(){
-  interface=""
-  Interfaces=`cat /proc/net/dev |grep ':' |cut -d':' -f1 |sed 's/\s//g' |grep -iv '^lo\|^sit\|^stf\|^gif\|^dummy\|^vmnet\|^vir\|^gre\|^ipip\|^ppp\|^bond\|^tun\|^tap\|^ip6gre\|^ip6tnl\|^teql\|^ocserv\|^vpn'`
-  defaultRoute=`ip route show default |grep "^default"`
-  for item in `echo "$Interfaces"`
-    do
-      [ -n "$item" ] || continue
-      echo "$defaultRoute" |grep -q "$item"
-      [ $? -eq 0 ] && interface="$item" && break
+function detectInstallNetwork(){
+  local routes line token previous dev gateway metric proto source
+  local bestMetric='' bestDev='' bestGateway='' bestProto='' bestSource=''
+  local addrLine address count=0
+
+  routes=$(ip -4 route show default) || return 1
+  while IFS= read -r line; do
+    [[ "$line" == default\ * ]] || continue
+    dev='' gateway='' metric=0 proto='' source='' previous=''
+    for token in $line; do
+      case "$previous" in
+        dev) dev="$token" ;;
+        via) gateway="$token" ;;
+        metric) metric="$token" ;;
+        proto) proto="$token" ;;
+        src) source="$token" ;;
+      esac
+      previous="$token"
     done
-  echo "$interface"
+    [[ -n "$dev" && -n "$gateway" && "$metric" =~ ^[0-9]+$ ]] || continue
+    if [[ -z "$bestMetric" ]] || (( 10#$metric < 10#$bestMetric )); then
+      bestMetric="$metric" bestDev="$dev" bestGateway="$gateway"
+      bestProto="$proto" bestSource="$source" count=1
+    elif (( 10#$metric == 10#$bestMetric )); then
+      count=$((count + 1))
+    fi
+  done <<< "$routes"
+  if [[ "$count" != 1 ]]; then
+    printf 'Error: cannot select one IPv4 default route (best routes: %s)\n' "$count" >&2
+    return 1
+  fi
+
+  INSTALL_IFACE="$bestDev" INSTALL_GATEWAY="$bestGateway"
+  INSTALL_IPV4='' INSTALL_PREFIX='' INSTALL_USE_DHCP=0
+  while IFS= read -r addrLine; do
+    [[ "$addrLine" == *' inet '* ]] || continue
+    address=${addrLine#* inet }
+    address=${address%% *}
+    if [[ -n "$bestSource" && "${address%/*}" != "$bestSource" ]]; then
+      continue
+    fi
+    [[ -z "$INSTALL_IPV4" ]] || {
+      printf 'Error: multiple IPv4 addresses on default interface %s\n' "$bestDev" >&2
+      return 1
+    }
+    INSTALL_IPV4=${address%/*}
+    INSTALL_PREFIX=${address#*/}
+    [[ "$bestProto" == dhcp && " $addrLine " == *' dynamic '* ]] && INSTALL_USE_DHCP=1
+  done < <(ip -4 -o addr show dev "$bestDev" scope global)
+  if [[ ! "$INSTALL_IPV4" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ||
+        ! "$INSTALL_PREFIX" =~ ^[0-9]+$ ]] || (( INSTALL_PREFIX > 32 )); then
+    printf 'Error: no usable IPv4 address on default interface %s\n' "$bestDev" >&2
+    return 1
+  fi
+  INSTALL_NETMASK=$(netmask "$INSTALL_PREFIX")
 }
 
 function getDisk(){
@@ -504,16 +548,9 @@ fi
 [ -n "$ipAddr" ] && [ -n "$ipMask" ] && [ -n "$ipGate" ] && setNet='1';
 if [ "$setNet" == "0" ]; then
   dependence ip
-  [ -n "$interface" ] || interface=`getInterface`
-  iAddr=`ip addr show dev $interface |grep "inet.*" |head -n1 |grep -o '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\/[0-9]\{1,2\}'`
-  echo "$iAddr" |grep '^10\.' |grep '/32$' >/dev/null && iAddr=`echo "$iAddr" |sed 's/\/32/\/24/'` # Fix GCP
-  ipAddr=`echo ${iAddr} |cut -d'/' -f1`
-  ipMask=`netmask $(echo ${iAddr} |cut -d'/' -f2)`
-  ipGate=`ip route show default |grep "^default" |grep -o '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}' |head -n1`
-fi
-if [ -z "$interface" ]; then
-    dependence ip
-    [ -n "$interface" ] || interface=`getInterface`
+  detectInstallNetwork || exit 1
+  interface="$INSTALL_IFACE"
+  ipAddr="$INSTALL_IPV4" ipMask="$INSTALL_NETMASK" ipGate="$INSTALL_GATEWAY"
 fi
 IPv4="$ipAddr"; MASK="$ipMask"; GATE="$ipGate";
 
@@ -942,6 +979,9 @@ if [[ "$linux_relese" == 'debian' ]]; then
   sed -i '/pkgsel\/update-policy/d' /tmp/boot/preseed.cfg
   sed -i 's/umount\ \/media.*true\;\ //g' /tmp/boot/preseed.cfg
   [[ -f '/tmp/firmware.cpio.gz' ]] && gzip -d < /tmp/firmware.cpio.gz | cpio --extract --verbose --make-directories --no-absolute-filenames >>/dev/null 2>&1
+  if [[ "$ddMode" == '0' && "$setNet" == '0' && "$INSTALL_USE_DHCP" == '1' ]]; then
+    sed -i '/netcfg\/disable_autoconfig/d; /netcfg\/dhcp_failed/d; /netcfg\/dhcp_options/d; /netcfg\/get_ipaddress/d; /netcfg\/get_netmask/d; /netcfg\/get_gateway/d; /netcfg\/get_nameservers/d; /netcfg\/confirm_static/d' /tmp/boot/preseed.cfg
+  fi
 else
   sed -i '/d-i\ grub-installer\/force-efi-extra-removable/d' /tmp/boot/preseed.cfg
 fi

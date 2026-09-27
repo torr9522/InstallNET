@@ -396,6 +396,16 @@ function commandExists(){
   command -v "$1" >/dev/null 2>&1
 }
 
+function preventKexecReboot(){
+  local kexecConfig="${1:-/etc/default/kexec}"
+  local kexecLoader="${2:-/etc/init.d/kexec-load}"
+  local marker="${3:-/no-kexec-reboot}"
+  [[ -x "$kexecLoader" && -f "$kexecConfig" ]] || return 0
+  grep -Eq '^[[:space:]]*LOAD_KEXEC=true([[:space:]]|$)' "$kexecConfig" || return 0
+  : >"$marker" || return 1
+  logInstallnetHandoff '[PASS] disabled kexec for GRUB reboot'
+}
+
 function scheduleGrubOnceBoot(){
   local entry="$1"
   local grubenv="${GRUBDIR}/grubenv"
@@ -566,6 +576,7 @@ function finishInstallnetHandoff(){
     logInstallnetHandoff '[PASS] --no-reboot: reboot skipped'
     return 0
   fi
+  preventKexecReboot || { failInstallnetHandoff 'disable kexec before GRUB reboot'; return 1; }
   logInstallnetHandoff '[PASS] installer handoff verified, rebooting'
   reboot || { failInstallnetHandoff 'reboot command'; return 1; }
 }
@@ -1150,6 +1161,11 @@ if [[ "$loaderMode" == "0" ]]; then
   if [[ "$INSTALLNET_NO_REBOOT" == '1' ]]; then
     echo -e "\033[33mInfo:\033[0m reboot skipped because --no-reboot was requested."
     exit 0
+  fi
+
+  if [[ "$GRUBVER" == '0' ]] && [[ "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]] &&
+     ! preventKexecReboot; then
+    failInstallnetHandoff 'disable kexec before GRUB reboot' || exit 1
   fi
 
   sleep 3

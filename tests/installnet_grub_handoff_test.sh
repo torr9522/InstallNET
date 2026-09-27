@@ -64,6 +64,19 @@ grub-script-check(){ [[ "$MOCK_CHECK" == good ]] && /usr/bin/grub-script-check "
 sync(){ :; }
 reboot(){ MOCK_REBOOT=$((MOCK_REBOOT + 1)); }
 
+printf 'LOAD_KEXEC=true\n' >"$fixture/kexec.conf"
+preventKexecReboot "$fixture/kexec.conf" "$fixture/missing-loader" "$fixture/no-kexec-reboot"
+[[ ! -e "$fixture/no-kexec-reboot" ]]
+printf '#!/bin/sh\n' >"$fixture/kexec-load"
+chmod +x "$fixture/kexec-load"
+printf 'LOAD_KEXEC=false\n' >"$fixture/kexec.conf"
+preventKexecReboot "$fixture/kexec.conf" "$fixture/kexec-load" "$fixture/no-kexec-reboot"
+[[ ! -e "$fixture/no-kexec-reboot" ]]
+printf 'LOAD_KEXEC=true\n' >"$fixture/kexec.conf"
+preventKexecReboot "$fixture/kexec.conf" "$fixture/kexec-load" "$fixture/no-kexec-reboot"
+[[ -f "$fixture/no-kexec-reboot" ]]
+echo 'PASS: kexec bypass marker only when reboot interception is enabled'
+
 expect_fail(){
   if "$@" >"$fixture/output" 2>&1; then
     echo "FAIL: unexpectedly passed: $*" >&2
@@ -136,3 +149,9 @@ finishInstallnetHandoff >"$fixture/output"
 [[ "$MOCK_REBOOT" == 0 ]]
 grep -Fq '[PASS] --no-reboot: reboot skipped' "$INSTALLNET_HANDOFF_LOG"
 echo 'PASS: full handoff preflight with --no-reboot does not reboot'
+
+preventKexecReboot(){ printf 'kexec prepared\n' >"$fixture/kexec-call"; }
+INSTALLNET_NO_REBOOT=0
+finishInstallnetHandoff >"$fixture/output"
+[[ "$MOCK_REBOOT" == 1 && -f "$fixture/kexec-call" ]]
+echo 'PASS: custom GRUB reboot prepares kexec bypass first'

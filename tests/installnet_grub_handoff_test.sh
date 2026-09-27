@@ -67,7 +67,7 @@ reboot(){ MOCK_REBOOT=$((MOCK_REBOOT + 1)); }
 printf 'LOAD_KEXEC=true\n' >"$fixture/kexec.conf"
 preventKexecReboot "$fixture/kexec.conf" "$fixture/missing-loader" "$fixture/no-kexec-reboot"
 [[ ! -e "$fixture/no-kexec-reboot" ]]
-printf '#!/bin/sh\n' >"$fixture/kexec-load"
+printf '#!/bin/sh\nNOKEXECFILE=/no-kexec-reboot\n' >"$fixture/kexec-load"
 chmod +x "$fixture/kexec-load"
 printf 'LOAD_KEXEC=false\n' >"$fixture/kexec.conf"
 preventKexecReboot "$fixture/kexec.conf" "$fixture/kexec-load" "$fixture/no-kexec-reboot"

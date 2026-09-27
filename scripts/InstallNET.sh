@@ -396,12 +396,21 @@ function commandExists(){
   command -v "$1" >/dev/null 2>&1
 }
 
+# Optional paths keep reboot protection testable without touching the host.
+# shellcheck disable=SC2119,SC2120
 function preventKexecReboot(){
   local kexecConfig="${1:-/etc/default/kexec}"
   local kexecLoader="${2:-/etc/init.d/kexec-load}"
   local marker="${3:-/no-kexec-reboot}"
+  local loaded="${4:-/sys/kernel/kexec_loaded}"
+  local kexecTool="${5:-kexec}"
   [[ -x "$kexecLoader" && -f "$kexecConfig" ]] || return 0
+  if [[ -r "$loaded" && "$(<"$loaded")" == '1' ]]; then
+    "$kexecTool" -u || return 1
+    [[ "$(<"$loaded")" == '0' ]] || return 1
+  fi
   grep -Eq '^[[:space:]]*LOAD_KEXEC=true([[:space:]]|$)' "$kexecConfig" || return 0
+  grep -Fq '/no-kexec-reboot' "$kexecLoader" || return 1
   : >"$marker" || return 1
   logInstallnetHandoff '[PASS] disabled kexec for GRUB reboot'
 }
@@ -577,6 +586,7 @@ function finishInstallnetHandoff(){
     return 0
   fi
   preventKexecReboot || { failInstallnetHandoff 'disable kexec before GRUB reboot'; return 1; }
+  sync || { failInstallnetHandoff 'sync kexec bypass marker'; return 1; }
   logInstallnetHandoff '[PASS] installer handoff verified, rebooting'
   reboot || { failInstallnetHandoff 'reboot command'; return 1; }
 }
@@ -1166,6 +1176,9 @@ if [[ "$loaderMode" == "0" ]]; then
   if [[ "$GRUBVER" == '0' ]] && [[ "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]] &&
      ! preventKexecReboot; then
     failInstallnetHandoff 'disable kexec before GRUB reboot' || exit 1
+  fi
+  if [[ "$GRUBVER" == '0' ]] && [[ "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]]; then
+    sync || { failInstallnetHandoff 'sync kexec bypass marker'; exit 1; }
   fi
 
   sleep 3

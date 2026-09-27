@@ -355,27 +355,38 @@ function commandExists(){
 function scheduleGrubOnceBoot(){
   local entry="$1"
   local grubenv="${GRUBDIR}/grubenv"
+  local entryFile="${GRUBDIR}/${GRUBFILE}" editEnv envlist next
 
-  [ -n "$entry" ] || return 1
+  if [[ -z "$entry" || ! -f "$grubenv" || ! -f "$entryFile" ]]; then
+    return 1
+  fi
+  if [[ "${INSTALLNET_USE_CUSTOM_GRUB:-0}" == '1' ]]; then
+    entryFile="${GRUBDIR}/custom.cfg"
+    grep -Eq 'source[[:space:]]+.*custom\.cfg' "${GRUBDIR}/${GRUBFILE}" || return 1
+  fi
+  grep -Fq "menuentry '$entry'" "$entryFile" || return 1
+  grep -q 'load_env' "${GRUBDIR}/${GRUBFILE}" || return 1
+  grep -q 'next_entry' "${GRUBDIR}/${GRUBFILE}" || return 1
 
-  if commandExists grub-reboot; then
-    grub-reboot "$entry" && return 0
+  if [[ "$GRUBDIR" == */grub2 ]] && commandExists grub2-editenv; then
+    editEnv=grub2-editenv
+  elif commandExists grub-editenv; then
+    editEnv=grub-editenv
+  elif commandExists grub2-editenv; then
+    editEnv=grub2-editenv
+  else
+    return 1
   fi
 
-  if commandExists grub2-reboot; then
-    grub2-reboot "$entry" && return 0
+  if [[ "$GRUBDIR" == */grub ]] && commandExists grub-reboot; then
+    grub-reboot --boot-directory="${GRUBDIR%/grub}" "$entry" || return 1
+  else
+    "$editEnv" "$grubenv" set next_entry="$entry" || return 1
   fi
 
-  if [ -f "$grubenv" ]; then
-    if commandExists grub-editenv; then
-      grub-editenv "$grubenv" set next_entry="$entry" && return 0
-    fi
-    if commandExists grub2-editenv; then
-      grub2-editenv "$grubenv" set next_entry="$entry" && return 0
-    fi
-  fi
-
-  return 1
+  envlist=$("$editEnv" "$grubenv" list) || return 1
+  next=$(printf '%s\n' "$envlist" |sed -n 's/^next_entry=//p')
+  [[ "$next" == "$entry" ]]
 }
 
 function logInstallnetHandoff(){
@@ -490,21 +501,8 @@ function verifyInstallnetGrub(){
 }
 
 function scheduleVerifiedInstallnetBoot(){
-  local envfile="$GRUBDIR/grubenv" envlist next
-
-  if [ ! -f "$envfile" ] || ! commandExists grub-reboot || ! commandExists grub-editenv; then
-    failInstallnetHandoff 'GRUB one-shot commands or grubenv unavailable' || return 1
-  fi
-  if ! grub-reboot "$INSTALL_ENTRY_TITLE"; then
-    failInstallnetHandoff 'grub-reboot failed' || return 1
-  fi
-  envlist=$(grub-editenv "$envfile" list 2>/dev/null) || {
-    failInstallnetHandoff 'cannot read grubenv' || return 1
-  }
-  next=$(printf '%s\n' "$envlist" |sed -n 's/^next_entry=//p')
-  logInstallnetHandoff "grubenv: $envfile next_entry=${next:-<empty>}"
-  if [ "$next" != "$INSTALL_ENTRY_TITLE" ]; then
-    failInstallnetHandoff 'GRUB next_entry differs from installer menuentry' || return 1
+  if ! scheduleGrubOnceBoot "$INSTALL_ENTRY_TITLE"; then
+    failInstallnetHandoff 'GRUB entry, environment write or next_entry readback' || return 1
   fi
   logInstallnetHandoff '[PASS] GRUB one-shot next_entry'
 }

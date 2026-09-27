@@ -20,11 +20,15 @@ GRUB_INITRD_PATH=/boot/initrd.img
 INSTALL_ENTRY_TITLE='Install OS [bookworm amd64]'
 INSTALLNET_HANDOFF_LOG="$fixture/handoff.log"
 INSTALLNET_NO_REBOOT=1
+INSTALLNET_USE_CUSTOM_GRUB=1
 BOOT_OPTION='auto=true hostname=debian domain=debian quiet'
 mkdir -p "$GRUBDIR" "$fixture/source" "$fixture/target"
 
 cat >"$GRUBDIR/grub.cfg" <<'EOF'
 load_env
+if [ "${next_entry}" ]; then
+    set default="${next_entry}"
+fi
 menuentry 'Original OS' {
     linux /boot/old-kernel root=/dev/vda1
     initrd /boot/old-initrd
@@ -47,11 +51,12 @@ MOCK_REBOOT=0
 commandExists(){ [[ "$1" != grub2-script-check && "$1" != absent-tool ]]; }
 update-grub(){ return 0; }
 grub-reboot(){
+  local entry="${*: -1}"
   case "$MOCK_SCHEDULE" in
     fail) return 1 ;;
     missing) : >"$GRUBDIR/grubenv" ;;
     wrong) printf 'next_entry=Original OS\n' >"$GRUBDIR/grubenv" ;;
-    *) printf 'next_entry=%s\n' "$1" >"$GRUBDIR/grubenv" ;;
+    *) printf 'next_entry=%s\n' "$entry" >"$GRUBDIR/grubenv" ;;
   esac
 }
 grub-editenv(){ [[ "$MOCK_READ" == good ]] && cat "$1"; }

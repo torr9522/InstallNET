@@ -195,6 +195,63 @@ function dependence(){
   fi
 }
 
+function preflightInstallerDependencies(){
+  local dependency tool package
+  local -a required=(
+    wget:wget openssl:openssl cpio:cpio ip:iproute2
+    awk:mawk sed:sed grep:grep gzip:gzip find:findutils
+    lsblk:util-linux findmnt:util-linux
+    basename:coreutils cat:coreutils chmod:coreutils cp:coreutils
+    cut:coreutils date:coreutils dirname:coreutils head:coreutils
+    ls:coreutils mkdir:coreutils mktemp:coreutils mv:coreutils
+    rm:coreutils stat:coreutils sync:coreutils tail:coreutils
+    tee:coreutils uname:coreutils
+  )
+  local -a missing=()
+  local -A seen=()
+  if [[ "${Relese:-Debian}" == Debian && "${INSTALLNET_FORCE_GRUB_ONCE:-1}" == 1 &&
+        -f /boot/grub/grub.cfg ]]; then
+    required+=(update-grub:grub2-common)
+    if ! command -v grub2-editenv >/dev/null 2>&1; then
+      required+=(grub-editenv:grub-common)
+    fi
+    if ! command -v sha256sum >/dev/null 2>&1; then
+      required+=(cmp:diffutils)
+    fi
+  fi
+  if [[ ! -f /boot/grub/grub.cfg && ! -f /boot/grub2/grub.cfg ]]; then
+    required+=(xargs:findutils)
+  fi
+  for dependency in "${required[@]}"; do
+    tool=${dependency%%:*} package=${dependency#*:}
+    command -v "$tool" >/dev/null 2>&1 && continue
+    if [[ -z "${seen[$package]:-}" ]]; then
+      missing+=("$package")
+      seen[$package]=1
+    fi
+  done
+  (( ${#missing[@]} )) || return 0
+  printf '[INFO] Missing required dependencies: %s\n' "${missing[*]}"
+  if ! command -v apt-get >/dev/null 2>&1; then
+    printf '[ERROR] apt-get unavailable; cannot install required dependencies.\n' >&2
+    return 1
+  fi
+  printf '[INFO] Installing required dependencies...\n'
+  if ! DEBIAN_FRONTEND=noninteractive apt-get update ||
+     ! DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"; then
+    printf '[ERROR] Required dependency installation failed.\n' >&2
+    return 1
+  fi
+  for dependency in "${required[@]}"; do
+    tool=${dependency%%:*}
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      printf '[ERROR] Required command still unavailable: %s\n' "$tool" >&2
+      return 1
+    fi
+  done
+  printf '[OK] Required dependencies ready\n'
+}
+
 function probeInstallerResource(){
   local url="$1" attempt status=0
   for attempt in 1 2; do
@@ -592,6 +649,10 @@ function finishInstallnetHandoff(){
 }
 
 if [[ "$loaderMode" == "0" ]]; then
+  if [[ -f /etc/debian_version && "$ddMode" == 0 &&
+        ( "${Relese:-Debian}" == Debian || "$Relese" == Ubuntu ) ]]; then
+    preflightInstallerDependencies || exit 1
+  fi
   Grub=`getGrub "/boot"`
   [ -z "$Grub" ] && echo -ne "Error! Not Found grub.\n" && exit 1;
   GRUBDIR=`echo "$Grub" |cut -d':' -f1`

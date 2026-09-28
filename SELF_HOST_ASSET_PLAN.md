@@ -1,6 +1,6 @@
 # Debian 12 AMD64: fixed release assets (proposal)
 
-Status: source-provenance verified; release unpublished; installer pairing and
+Status: source-provenance verified; installer pairing and
 installer-side apt consumption untested. No change to `yijianDD` is authorized
 by this plan. The data in `assets/debian12-amd64.manifest.json` pins the proposed
 tag `installnet-debian12-assets-v1` and the exact hashes.
@@ -26,7 +26,7 @@ bytes. Only the initrd Snapshot body has been independently checked so far.
 
 ## Install path decision
 
-1. Publish assets with immutable names/tag only after confirming upload rights.
+1. Publish assets with immutable names/tag after confirming upload rights.
    Never overwrite v1; use v2 for changes. Release primary and Debian Snapshot
    same-hash fallback must both pass SHA256; mismatches abort or fall back, never
    silently install newer files.

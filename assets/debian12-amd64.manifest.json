@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "release_tag": "installnet-debian12-assets-v1",
+  "suite": "bookworm",
+  "architecture": "amd64",
+  "status": "source-verified; installation-pairing-not-validated",
+  "assets": [
+    {
+      "name": "debian12-amd64-installer-linux",
+      "type": "installer-kernel",
+      "package_name": "debian-installer",
+      "package_version": "bookworm-current-2026-09-28",
+      "size": 8222656,
+      "sha256": "d8808aa4ca188560da1e6d749dcb930c87a5fd8b11ebff1f3fa6d728af35203d",
+      "official_url": "https://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/linux",
+      "fallback_url": "https://snapshot.debian.org/file/91415359cd1e5347e049dfb0a98296a8f3a08ca5/linux",
+      "release_url": "https://github.com/torr9522/InstallNET/releases/download/installnet-debian12-assets-v1/debian12-amd64-installer-linux",
+      "source_metadata": "bookworm/InRelease -> main/installer-amd64/current/images/SHA256SUMS"
+    },
+    {
+      "name": "debian12-amd64-installer-initrd.gz",
+      "type": "installer-initrd",
+      "package_name": "debian-installer",
+      "package_version": "bookworm-current-2026-09-28",
+      "size": 40810276,
+      "sha256": "cb24a28a5ba13dfb22e6e75bdd8ab997dbdee6e3ec6c1102f6c7f93044bd817d",
+      "official_url": "https://deb.debian.org/debian/dists/bookworm/main/installer-amd64/current/images/netboot/debian-installer/amd64/initrd.gz",
+      "fallback_url": "https://snapshot.debian.org/file/624d5b14e8a10e00ce625cdcfb040d27e4d7fc10/initrd.gz",
+      "release_url": "https://github.com/torr9522/InstallNET/releases/download/installnet-debian12-assets-v1/debian12-amd64-installer-initrd.gz",
+      "source_metadata": "bookworm/InRelease -> main/installer-amd64/current/images/SHA256SUMS"
+    },
+    {
+      "name": "linux-image-6.1.0-50-amd64_6.1.176-1_amd64.deb",
+      "type": "target-kernel-package",
+      "package_name": "linux-image-6.1.0-50-amd64",
+      "package_version": "6.1.176-1",
+      "size": 70305560,
+      "sha256": "7b5597492a0a65aee61985a492e6bcc3f2cde830072a0e3b3d8c7e1b90279bd3",
+      "official_url": "https://deb.debian.org/debian/pool/main/l/linux-signed-amd64/linux-image-6.1.0-50-amd64_6.1.176-1_amd64.deb",
+      "fallback_url": "https://snapshot.debian.org/file/ab49acaac82ed54455b384f861eac71d080f5e4a/linux-image-6.1.0-50-amd64_6.1.176-1_amd64.deb",
+      "release_url": "https://github.com/torr9522/InstallNET/releases/download/installnet-debian12-assets-v1/linux-image-6.1.0-50-amd64_6.1.176-1_amd64.deb",
+      "source_metadata": "bookworm/InRelease -> main/binary-amd64/Packages.xz"
+    },
+    {
+      "name": "intel-microcode_3.20251111.1~deb12u1_amd64.deb",
+      "type": "target-microcode-package",
+      "package_name": "intel-microcode",
+      "package_version": "3.20251111.1~deb12u1",
+      "size": 12848836,
+      "sha256": "0c3227e105b4b7dd857159afe45d06ca602954d562c681430bdce866f23e1d40",
+      "official_url": "https://deb.debian.org/debian/pool/non-free-firmware/i/intel-microcode/intel-microcode_3.20251111.1~deb12u1_amd64.deb",
+      "fallback_url": "https://snapshot.debian.org/file/3a4d32cb52e765c9c86336efacfdb983d3db99a5/intel-microcode_3.20251111.1~deb12u1_amd64.deb",
+      "release_url": "https://github.com/torr9522/InstallNET/releases/download/installnet-debian12-assets-v1/intel-microcode_3.20251111.1~deb12u1_amd64.deb",
+      "source_metadata": "bookworm/InRelease -> non-free-firmware/binary-amd64/Packages.xz"
+    }
+  ]
+}

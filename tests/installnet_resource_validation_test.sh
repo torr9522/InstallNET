@@ -14,15 +14,15 @@ source <(awk '
 
 INSTALLNET_HANDOFF_LOG="$fixture/handoff.log"
 mkdir -p "$fixture/source" "$fixture/target" "$fixture/backing"
-truncate -s 2097152 "$fixture/source/vmlinuz"
 head -c 2097152 /dev/urandom |gzip >"$fixture/source/initrd.img"
 
-MOCK_KERNEL_ARCH=arm64
-file() {
-  case "$MOCK_KERNEL_ARCH" in
-    arm64) printf '%s\n' 'Linux kernel ARM64 boot executable Image, little-endian, 4K pages' ;;
-    amd64) printf '%s\n' 'Linux kernel x86 boot executable bzImage, version 6.1.0' ;;
-    *) printf '%s\n' 'data' ;;
+make_kernel() {
+  local architecture=$1 target=$2
+  : >"$target"
+  truncate -s 2097152 "$target"
+  case "$architecture" in
+    arm64) printf ARMd |dd of="$target" bs=1 seek=56 conv=notrunc status=none ;;
+    amd64) printf HdrS |dd of="$target" bs=1 seek=514 conv=notrunc status=none ;;
   esac
 }
 
@@ -38,13 +38,15 @@ copy_artifacts() {
   cp "$fixture/source/initrd.img" "$fixture/target/initrd.img"
 }
 
+make_kernel arm64 "$fixture/source/vmlinuz"
 copy_artifacts
 verifyInstallnetArtifacts \
   "$fixture/source/vmlinuz" "$fixture/source/initrd.img" \
   "$fixture/target/vmlinuz" "$fixture/target/initrd.img" arm64 >"$fixture/output"
 printf 'PASS: correct ARM64 installer kernel accepted\n'
 
-MOCK_KERNEL_ARCH=amd64
+make_kernel amd64 "$fixture/source/vmlinuz"
+copy_artifacts
 verifyInstallnetArtifacts \
   "$fixture/source/vmlinuz" "$fixture/source/initrd.img" \
   "$fixture/target/vmlinuz" "$fixture/target/initrd.img" amd64 >"$fixture/output"
@@ -77,7 +79,6 @@ grep -Fq 'installer kernel SHA256 mismatch' "$fixture/output"
 printf 'PASS: same-size modified kernel rejected\n'
 
 copy_artifacts
-MOCK_KERNEL_ARCH=amd64
 expect_fail verifyInstallnetArtifacts \
   "$fixture/source/vmlinuz" "$fixture/source/initrd.img" \
   "$fixture/target/vmlinuz" "$fixture/target/initrd.img" arm64

@@ -568,31 +568,31 @@ EOF
 }
 
 function verifyInstallerKernelArchitecture(){
-  local kernel="$1" expected="${2:-}" description
+  local kernel="$1" expected="${2:-}" signature
 
   [ -n "$expected" ] || return 0
-  if ! commandExists file; then
-    failInstallnetHandoff 'installer kernel architecture check requires file' || return 1
-  fi
-  description=$(file -b "$kernel") || {
-    failInstallnetHandoff 'installer kernel architecture unreadable'; return 1
-  }
   case "$expected" in
     arm64|aarch64)
-      echo "$description" |grep -Fq 'Linux kernel ARM64 boot executable' || {
-        failInstallnetHandoff "installer kernel architecture mismatch: expected arm64, got $description"; return 1
+      signature=$(head -c 60 "$kernel" |tail -c 4) || {
+        failInstallnetHandoff 'installer kernel architecture unreadable'; return 1
+      }
+      [ "$signature" == ARMd ] || {
+        failInstallnetHandoff 'installer kernel architecture mismatch: expected arm64'; return 1
       }
       ;;
     amd64|x86_64|i386)
-      echo "$description" |grep -Fq 'Linux kernel x86 boot executable' || {
-        failInstallnetHandoff "installer kernel architecture mismatch: expected $expected, got $description"; return 1
+      signature=$(head -c 518 "$kernel" |tail -c 4) || {
+        failInstallnetHandoff 'installer kernel architecture unreadable'; return 1
+      }
+      [ "$signature" == HdrS ] || {
+        failInstallnetHandoff "installer kernel architecture mismatch: expected $expected"; return 1
       }
       ;;
     *)
       failInstallnetHandoff "installer kernel architecture unsupported: $expected"; return 1
       ;;
   esac
-  logInstallnetHandoff "kernel architecture: $expected ($description)"
+  logInstallnetHandoff "[PASS] installer kernel architecture: $expected"
 }
 
 function verifyInstallnetArtifacts(){

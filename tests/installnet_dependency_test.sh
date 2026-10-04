@@ -151,6 +151,14 @@ mock_missing=openssl
 grep -Fxq 'install -y --no-install-recommends openssl' "$events"
 printf 'PASS DEP13: Ubuntu target uses apt preflight\n'
 
+reset_case
+tmpDIST=22.04
+mock_missing='qemu-img sfdisk'
+preflightInstallerDependencies >"$fixture/output"
+expect_install qemu-utils fdisk
+tmpDIST=''
+printf 'PASS DEP17: modern Ubuntu cloud-image tools map to native packages\n'
+
 # Substitute fixture paths only in the helper to exercise GRUB conditionals.
 definition=$(declare -f preflightInstallerDependencies)
 eval "$(printf '%s\n' "$definition" | sed "s#/boot/grub/#$fixture/grub/#g; s#/boot/grub2/#$fixture/grub2/#g")"

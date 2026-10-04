@@ -44,6 +44,10 @@ export INSTALLNET_ABORT_ONESHOT_FAILURE="${INSTALLNET_ABORT_ONESHOT_FAILURE:-1}"
 export INSTALLNET_NO_REBOOT="${INSTALLNET_NO_REBOOT:-0}"
 export INSTALLNET_USE_CUSTOM_GRUB='0'
 export INSTALLNET_HANDOFF_LOG='/var/log/installnet-handoff.log'
+export INSTALLNET_CLOUD_IMAGE='0'
+export CLOUD_IMAGE_URL=''
+export CLOUD_IMAGE_CHECKSUM_URL=''
+export CLOUD_IMAGE_FILE=''
 
 while [[ $# -ge 1 ]]; do
   case $1 in
@@ -209,7 +213,8 @@ function preflightInstallerDependencies(){
   )
   local -a missing=()
   local -A seen=()
-  if [[ "${Relese:-Debian}" == Debian && "${INSTALLNET_FORCE_GRUB_ONCE:-1}" == 1 &&
+  if [[ ( "${Relese:-Debian}" == Debian || "${Relese:-Debian}" == Ubuntu ) &&
+        "${INSTALLNET_FORCE_GRUB_ONCE:-1}" == 1 &&
         -f /boot/grub/grub.cfg ]]; then
     required+=(update-grub:grub2-common)
     if ! command -v grub2-editenv >/dev/null 2>&1; then
@@ -219,6 +224,9 @@ function preflightInstallerDependencies(){
       required+=(cmp:diffutils)
     fi
   fi
+  case "$(echo "${tmpDIST:-}" |sed -r 's/(.*)/\L\1/')" in
+    22.04|24.04|jammy|noble) required+=(qemu-img:qemu-utils sfdisk:fdisk) ;;
+  esac
   if [[ ! -f /boot/grub/grub.cfg && ! -f /boot/grub2/grub.cfg ]]; then
     required+=(xargs:findutils)
   fi
@@ -230,6 +238,19 @@ function preflightInstallerDependencies(){
       seen[$package]=1
     fi
   done
+  case "$(echo "${tmpDIST:-}" |sed -r 's/(.*)/\L\1/')" in
+    22.04|24.04|jammy|noble)
+      if ! find /usr/lib -type f -path '*/qemu/block-curl.so' -print -quit |grep -q . &&
+         [[ -z "${seen[qemu-block-extra]:-}" ]]; then
+        missing+=(qemu-block-extra)
+        seen[qemu-block-extra]=1
+      fi
+      if [[ ! -s /etc/ssl/certs/ca-certificates.crt && -z "${seen[ca-certificates]:-}" ]]; then
+        missing+=(ca-certificates)
+        seen[ca-certificates]=1
+      fi
+      ;;
+  esac
   (( ${#missing[@]} )) || return 0
   printf '[INFO] Missing required dependencies: %s\n' "${missing[*]}"
   if ! command -v apt-get >/dev/null 2>&1; then
@@ -249,6 +270,18 @@ function preflightInstallerDependencies(){
       return 1
     fi
   done
+  case "$(echo "${tmpDIST:-}" |sed -r 's/(.*)/\L\1/')" in
+    22.04|24.04|jammy|noble)
+      find /usr/lib -type f -path '*/qemu/block-curl.so' -print -quit |grep -q . || {
+        printf '[ERROR] qemu curl block driver still unavailable.\n' >&2
+        return 1
+      }
+      [[ -s /etc/ssl/certs/ca-certificates.crt ]] || {
+        printf '[ERROR] CA certificate bundle still unavailable.\n' >&2
+        return 1
+      }
+      ;;
+  esac
   printf '[OK] Required dependencies ready\n'
 }
 
@@ -307,6 +340,221 @@ function resolveDistributionCodename(){
       ;;
   esac
   echo "$requested"
+}
+
+function prepareCloudImageInstaller(){
+  local root="$1" bundle="$1/installnet-qemu" module loader object library
+  mkdir -p "$bundle/lib" "$bundle/modules" "$root/etc/ssl/certs" || return 1
+  module=$(find /usr/lib -type f -path '*/qemu/block-curl.so' -print -quit)
+  loader=$(ldd /usr/bin/qemu-img |awk '/ld-linux|ld-musl/ {print $1; exit}')
+  [ -n "$module" ] && [ -n "$loader" ] || return 1
+  cp -L /usr/bin/qemu-img "$bundle/qemu-img" || return 1
+  cp -L /sbin/sfdisk "$bundle/sfdisk" || return 1
+  cp -L "$module" "$bundle/modules/block-curl.so" || return 1
+  for object in /usr/bin/qemu-img /sbin/sfdisk "$module"; do
+    ldd "$object" |awk '/=> \// {print $3} /^\// {print $1}'
+  done |sort -u |while read -r library; do
+    cp -L "$library" "$bundle/lib/$(basename "$library")" || exit 1
+  done || return 1
+  cp -L "$loader" "$bundle/lib/$(basename "$loader")" || return 1
+  cp -L /etc/ssl/certs/ca-certificates.crt \
+    "$root/etc/ssl/certs/ca-certificates.crt" || return 1
+
+  cat >"$root/installnet-cloud.env" <<EOF
+INSTALL_DISK='$IncDisk'
+ROOT_PARTITION='$(partitionPath "$IncDisk" 1)'
+EFI_PARTITION='$(partitionPath "$IncDisk" 15)'
+IMAGE_URL='$CLOUD_IMAGE_URL'
+CHECKSUM_URL='$CLOUD_IMAGE_CHECKSUM_URL'
+IMAGE_FILE='$CLOUD_IMAGE_FILE'
+EXPECTED_ARCH='$VER'
+EXPECTED_CODENAME='$DIST'
+IPV4='$IPv4'
+PREFIX='$INSTALL_PREFIX'
+GATEWAY='$GATE'
+DNS='$ipDNS'
+MAC_ADDRESS='$(cat "/sys/class/net/$interface/address")'
+USE_DHCP='$INSTALL_USE_DHCP'
+PASSWORD_HASH='$myPASSWORD'
+SSH_PORT='$sshPORT'
+QEMU_LOADER='$(basename "$loader")'
+EOF
+  chmod 600 "$root/installnet-cloud.env" || return 1
+
+  cat >"$root/installnet-cloud-install.sh" <<'EOF'
+#!/bin/sh
+set -eu
+export LC_ALL=C
+. /installnet-cloud.env
+exec >>/tmp/installnet-cloud.log 2>&1
+
+fail() {
+  echo "[FAIL] $*"
+  echo "[FAIL] $*" >/dev/console || true
+  exit 1
+}
+log() {
+  echo "[INFO] $*"
+  echo "[INFO] $*" >/dev/console || true
+}
+qemu_img() {
+  QEMU_MODULE_DIR=/installnet-qemu/modules \
+    "/installnet-qemu/lib/$QEMU_LOADER" \
+    --library-path /installnet-qemu/lib /installnet-qemu/qemu-img "$@"
+}
+sfdisk_cmd() {
+  "/installnet-qemu/lib/$QEMU_LOADER" \
+    --library-path /installnet-qemu/lib /installnet-qemu/sfdisk "$@"
+}
+
+[ -b "$INSTALL_DISK" ] || fail "target disk missing: $INSTALL_DISK"
+list-devices disk |grep -Fxq -- "$INSTALL_DISK" || fail "target disk not enumerated"
+expected=$(wget -qO- "$CHECKSUM_URL" |
+  awk -v file="*$IMAGE_FILE" '$2 == file {print $1; exit}')
+[ -n "$expected" ] || fail 'official cloud image checksum missing'
+case "$expected" in *[!0-9a-f]*|'') fail 'invalid official cloud image checksum' ;; esac
+[ "${#expected}" -eq 64 ] || fail 'invalid official cloud image checksum'
+
+response=$(wget --spider -S "$IMAGE_URL" 2>&1) || fail 'cloud image metadata request'
+image_size=$(echo "$response" |
+  awk 'tolower($1) == "content-length:" {gsub("\\r", "", $2); size=$2} END {print size}')
+case "$image_size" in *[!0-9]*|'') fail 'cloud image Content-Length missing' ;; esac
+remote_info=$(qemu_img info "$IMAGE_URL") || fail 'cloud image metadata unreadable'
+echo "$remote_info" |grep -Fq 'file format: qcow2' || fail 'cloud image is not qcow2'
+virtual_size=$(echo "$remote_info" |
+  awk '/virtual size:/ {gsub(/[()]/, ""); print $(NF-1); exit}')
+case "$virtual_size" in *[!0-9]*|'') fail 'cloud image virtual size missing' ;; esac
+
+disk_size=$(blockdev --getsize64 "$INSTALL_DISK")
+sector_size=$(blockdev --getss "$INSTALL_DISK")
+case "$disk_size:$sector_size" in *[!0-9:]*|:*) fail 'target disk geometry unavailable' ;; esac
+[ "$disk_size" -gt 0 ] && [ "$sector_size" -gt 0 ] || fail 'invalid target disk geometry'
+padding=$((16 * 1024 * 1024))
+alignment=$((1024 * 1024 / sector_size))
+disk_sectors=$((disk_size / sector_size))
+stage_sectors=$(((image_size + padding + sector_size - 1) / sector_size))
+stage_end=$((disk_sectors - alignment))
+stage_start=$((((stage_end - stage_sectors) / alignment) * alignment))
+stage_bytes=$((stage_start * sector_size))
+[ "$alignment" -gt 0 ] && [ "$stage_start" -gt "$alignment" ] &&
+  [ $((virtual_size + padding)) -lt "$stage_bytes" ] ||
+  fail 'cloud image and verified staging area do not fit target disk'
+
+log "creating verified cloud image staging area"
+printf 'label: gpt\nunit: sectors\n\nstart=%s, size=%s, type=L\n' \
+  "$stage_start" "$((stage_end - stage_start))" |
+  sfdisk_cmd --wipe always "$INSTALL_DISK" || fail 'create cloud image staging partition'
+blockdev --rereadpt "$INSTALL_DISK" || fail 'staging partition table reread'
+udevadm settle
+[ -b "$ROOT_PARTITION" ] || fail 'cloud image staging partition missing'
+
+log "downloading and validating official cloud image SHA256"
+wget -nv -O "$ROOT_PARTITION" "$IMAGE_URL" || fail 'cloud image download'
+actual=$(head -c "$image_size" "$ROOT_PARTITION" |sha256sum |awk '{print $1}')
+[ "$actual" = "$expected" ] || fail 'cloud image SHA256 mismatch'
+local_info=$(qemu_img info "$ROOT_PARTITION") || fail 'verified cloud image unreadable'
+echo "$local_info" |grep -Fq 'file format: qcow2' || fail 'verified cloud image is not qcow2'
+local_virtual_size=$(echo "$local_info" |
+  awk '/virtual size:/ {gsub(/[()]/, ""); print $(NF-1); exit}')
+[ "$local_virtual_size" = "$virtual_size" ] || fail 'cloud image virtual size changed'
+
+log "writing $EXPECTED_CODENAME $EXPECTED_ARCH cloud image"
+qemu_img convert -f qcow2 -O raw "$ROOT_PARTITION" "$INSTALL_DISK" ||
+  fail 'cloud image conversion'
+sync
+blockdev --rereadpt "$INSTALL_DISK" || fail 'partition table reread'
+udevadm settle
+[ -b "$ROOT_PARTITION" ] || fail "root partition missing: $ROOT_PARTITION"
+[ -b "$EFI_PARTITION" ] || fail "EFI partition missing: $EFI_PARTITION"
+
+mkdir -p /target
+mount "$ROOT_PARTITION" /target || fail 'mount cloud root'
+[ -s /target/etc/os-release ] || fail 'target os-release missing'
+. /target/etc/os-release
+[ "${ID:-}" = ubuntu ] && [ "${VERSION_CODENAME:-}" = "$EXPECTED_CODENAME" ] ||
+  fail 'target cloud image release mismatch'
+mount --bind /dev /target/dev || fail 'bind target dev'
+mount -t proc proc /target/proc || fail 'mount target proc'
+mount -t sysfs sys /target/sys || fail 'mount target sys'
+chroot /target /usr/bin/growpart "$INSTALL_DISK" 1 || fail 'grow root partition'
+chroot /target /sbin/resize2fs "$ROOT_PARTITION" || fail 'resize root filesystem'
+
+mkdir -p /target/etc/netplan /target/etc/ssh/sshd_config.d /target/etc/cloud
+for config in /target/etc/netplan/*; do
+  [ -f "$config" ] && rm -f "$config"
+done
+if [ "$USE_DHCP" = 1 ]; then
+  cat >/target/etc/netplan/99-installnet.yaml <<NETPLAN
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    installnet:
+      match:
+        macaddress: "$MAC_ADDRESS"
+      dhcp4: true
+NETPLAN
+else
+  cat >/target/etc/netplan/99-installnet.yaml <<NETPLAN
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    installnet:
+      match:
+        macaddress: "$MAC_ADDRESS"
+      addresses:
+        - "$IPV4/$PREFIX"
+      routes:
+        - to: default
+          via: "$GATEWAY"
+          on-link: true
+      nameservers:
+        addresses: ["$DNS"]
+NETPLAN
+fi
+chmod 600 /target/etc/netplan/99-installnet.yaml
+cat >/target/etc/ssh/sshd_config.d/00-installnet.conf <<SSH
+Port $SSH_PORT
+PermitRootLogin yes
+PasswordAuthentication yes
+SSH
+awk -F: -v OFS=: -v hash="$PASSWORD_HASH" '$1 == "root" {$2=hash} {print}' \
+  /target/etc/shadow >/target/etc/shadow.installnet
+mv /target/etc/shadow.installnet /target/etc/shadow
+chmod 600 /target/etc/shadow
+touch /target/etc/cloud/cloud-init.disabled
+echo ubuntu >/target/etc/hostname
+: >/target/etc/machine-id
+chroot /target ssh-keygen -A || fail 'generate SSH host keys'
+
+kernel=$(find /target/boot -maxdepth 1 -type f -name 'vmlinuz-*' |sort |tail -n1)
+[ -s "$kernel" ] || fail 'target kernel missing'
+case "$EXPECTED_ARCH" in
+  arm64) [ "$(head -c 60 "$kernel" |tail -c 4)" = ARMd ] || fail 'target kernel architecture mismatch' ;;
+  amd64) [ "$(head -c 518 "$kernel" |tail -c 4)" = HdrS ] || fail 'target kernel architecture mismatch' ;;
+  *) fail "unsupported target architecture: $EXPECTED_ARCH" ;;
+esac
+mount "$EFI_PARTITION" /target/boot/efi || fail 'mount target EFI'
+case "$EXPECTED_ARCH" in
+  arm64) [ -s /target/boot/efi/EFI/BOOT/BOOTAA64.EFI ] || fail 'ARM64 EFI fallback missing' ;;
+  amd64) [ -s /target/boot/efi/EFI/BOOT/BOOTX64.EFI ] || fail 'AMD64 EFI fallback missing' ;;
+esac
+cp /tmp/installnet-cloud.log /target/var/log/installnet-cloud.log
+sync
+log 'cloud image installation verified; rebooting'
+reboot
+EOF
+  chmod 700 "$root/installnet-cloud-install.sh" || return 1
+
+  QEMU_MODULE_DIR="$bundle/modules" "$bundle/lib/$(basename "$loader")" \
+    --library-path "$bundle/lib" "$bundle/qemu-img" info "$CLOUD_IMAGE_URL" |
+    grep -Fq 'file format: qcow2'
+}
+
+function partitionPath(){
+  local disk="$1" number="$2"
+  [[ "$disk" =~ [0-9]$ ]] && echo "${disk}p${number}" || echo "${disk}${number}"
 }
 
 function selectMirror(){
@@ -725,7 +973,7 @@ fi
 [ -n "$Relese" ] || Relese='Debian'
 linux_relese=$(echo "$Relese" |sed 's/\ //g' |sed -r 's/(.*)/\L\1/')
 if [[ "$loaderMode" == '0' && "$GRUBDIR" == '/boot/grub' && "$GRUBVER" == '0' &&
-      "$linux_relese" == 'debian' && "$ddMode" == '0' &&
+      ( "$linux_relese" == 'debian' || "$linux_relese" == 'ubuntu' ) && "$ddMode" == '0' &&
       "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]]; then
   INSTALLNET_USE_CUSTOM_GRUB='1'
   : >"$INSTALLNET_HANDOFF_LOG" || exit 1
@@ -768,7 +1016,8 @@ fi
 [[ -n "$tmpWORD" ]] && myPASSWORD=`openssl passwd -1 "$tmpWORD"`;
 [[ -z "$myPASSWORD" ]] && myPASSWORD=`openssl passwd -1 "Pwd@Debian11"`;
 
-if [[ "$linux_relese" == 'debian' && "$ddMode" == '0' && "$loaderMode" == '0' ]]; then
+if [[ ( "$linux_relese" == 'debian' || "$linux_relese" == 'ubuntu' ) &&
+      "$ddMode" == '0' && "$loaderMode" == '0' ]]; then
   dependence findmnt
   IncDisk=$(getRootDisk) || {
     echo 'Error: cannot safely identify the disk backing /; refusing unattended partitioning.' >&2
@@ -805,7 +1054,15 @@ if [[ -n "$tmpDIST" ]]; then
   if [[ "$Relese" == 'Ubuntu' ]]; then
     SpikCheckDIST='0'
     DIST=$(resolveDistributionCodename "$Relese" "$tmpDIST")
-    LinuxMirror=$(selectMirror "$Relese" "$DIST" "$VER" "$tmpMirror")
+    if [[ "$DIST" == jammy || "$DIST" == noble ]]; then
+      INSTALLNET_CLOUD_IMAGE='1'
+      LinuxMirror=$(selectMirror Debian bookworm "$VER" '')
+      CLOUD_IMAGE_FILE="${DIST}-server-cloudimg-${VER}.img"
+      CLOUD_IMAGE_URL="https://cloud-images.ubuntu.com/${DIST}/current/${CLOUD_IMAGE_FILE}"
+      CLOUD_IMAGE_CHECKSUM_URL="https://cloud-images.ubuntu.com/${DIST}/current/SHA256SUMS"
+    else
+      LinuxMirror=$(selectMirror "$Relese" "$DIST" "$VER" "$tmpMirror")
+    fi
   fi
   if [[ "$Relese" == 'CentOS' ]]; then
     SpikCheckDIST='1'
@@ -835,7 +1092,7 @@ if [[ -z "$LinuxMirror" ]]; then
   exit 1;
 fi
 
-if [[ "$SpikCheckDIST" == '0' && "$Relese" != 'Debian' ]]; then
+if [[ "$SpikCheckDIST" == '0' && "$Relese" != 'Debian' && "$INSTALLNET_CLOUD_IMAGE" != '1' ]]; then
   DistsList="$(wget --no-check-certificate -qO- "$LinuxMirror/dists/" |grep -o 'href=.*/"' |cut -d'"' -f2 |sed '/-\|old\|Debian\|experimental\|stable\|test\|sid\|devel/d' |grep '^[^/]' |sed -n '1h;1!H;$g;s/\n//g;s/\//\;/g;$p')";
   for CheckDEB in `echo "$DistsList" |sed 's/;/\n/g'`
     do
@@ -888,7 +1145,21 @@ fi
 
 echo -e "\n[\033[33m$Relese\033[0m] [\033[33m$DIST\033[0m] [\033[33m$VER\033[0m] Downloading..."
 
-if [[ "$linux_relese" == 'debian' ]] || [[ "$linux_relese" == 'ubuntu' ]]; then
+if [[ "$INSTALLNET_CLOUD_IMAGE" == '1' ]]; then
+  if ! wget --no-check-certificate --tries=2 --timeout=30 -qO '/tmp/initrd.img' "${LinuxMirror}/dists/bookworm/main/installer-${VER}/current/images/netboot/debian-installer/${VER}/initrd.gz" ||
+     [[ ! -s /tmp/initrd.img ]] || ! gzip -t /tmp/initrd.img; then
+    echo 'Error: cloud installer initrd download or integrity check failed.' >&2
+    exit 1
+  fi
+  if ! wget --no-check-certificate --tries=2 --timeout=30 -qO '/tmp/vmlinuz' "${LinuxMirror}/dists/bookworm/main/installer-${VER}/current/images/netboot/debian-installer/${VER}/linux" ||
+     [[ ! -s /tmp/vmlinuz ]]; then
+    echo 'Error: cloud installer kernel download failed.' >&2
+    exit 1
+  fi
+  MirrorHost="$(echo "$LinuxMirror" |awk -F'://|/' '{print $2}')"
+  MirrorFolder="$(echo "$LinuxMirror" |awk -F''${MirrorHost}'' '{print $2}')"
+  [ -n "$MirrorFolder" ] || MirrorFolder='/'
+elif [[ "$linux_relese" == 'debian' ]] || [[ "$linux_relese" == 'ubuntu' ]]; then
   [ "$DIST" == "focal" ] && legacy="legacy-" || legacy=""
   if [[ "$linux_relese" == 'debian' ]]; then
     if ! wget --no-check-certificate --tries=2 --timeout=30 -qO '/tmp/initrd.img' "${LinuxMirror}/dists/${DIST}/main/installer-${VER}/current/${legacy}images/netboot/${linux_relese}-installer/${VER}/initrd.gz" ||
@@ -1162,6 +1433,14 @@ echo '' >>/target/etc/crontab; \
 echo '${setCMD}' >/target/etc/run.sh;
 EOF
 
+if [[ "$INSTALLNET_CLOUD_IMAGE" == '1' ]]; then
+  sed -i "/^d-i partman\/early_command /c\\d-i partman/early_command string sh /installnet-cloud-install.sh" /tmp/boot/preseed.cfg
+  prepareCloudImageInstaller /tmp/boot || {
+    echo 'Error: failed to prepare cloud image installer.' >&2
+    exit 1
+  }
+fi
+
 if [[ "$loaderMode" != "0" ]] && [[ "$setNet" == '0' ]]; then
   sed -i '/netcfg\/disable_autoconfig/d' /tmp/boot/preseed.cfg
   sed -i '/netcfg\/dhcp_options/d' /tmp/boot/preseed.cfg
@@ -1199,7 +1478,9 @@ WinRDP(){
 [[ "$ddMode" == '0' ]] && {
   sed -i '/anna-install/d' /tmp/boot/preseed.cfg
   sed -i 's/wget.*\/sbin\/reboot\;\ //g' /tmp/boot/preseed.cfg
-  applyDebianP1Preseed /tmp/boot/preseed.cfg
+  if [[ "$INSTALLNET_CLOUD_IMAGE" != '1' ]]; then
+    applyDebianP1Preseed /tmp/boot/preseed.cfg
+  fi
 }
 
 elif [[ "$linux_relese" == 'centos' ]]; then

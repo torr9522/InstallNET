@@ -567,22 +567,52 @@ EOF
   logInstallnetHandoff "[PASS] installer menuentry in $config"
 }
 
+function verifyInstallerKernelArchitecture(){
+  local kernel="$1" expected="${2:-}" description
+
+  [ -n "$expected" ] || return 0
+  if ! commandExists file; then
+    failInstallnetHandoff 'installer kernel architecture check requires file' || return 1
+  fi
+  description=$(file -b "$kernel") || {
+    failInstallnetHandoff 'installer kernel architecture unreadable'; return 1
+  }
+  case "$expected" in
+    arm64|aarch64)
+      echo "$description" |grep -Fq 'Linux kernel ARM64 boot executable' || {
+        failInstallnetHandoff "installer kernel architecture mismatch: expected arm64, got $description"; return 1
+      }
+      ;;
+    amd64|x86_64|i386)
+      echo "$description" |grep -Fq 'Linux kernel x86 boot executable' || {
+        failInstallnetHandoff "installer kernel architecture mismatch: expected $expected, got $description"; return 1
+      }
+      ;;
+    *)
+      failInstallnetHandoff "installer kernel architecture unsupported: $expected"; return 1
+      ;;
+  esac
+  logInstallnetHandoff "kernel architecture: $expected ($description)"
+}
+
 function verifyInstallnetArtifacts(){
   local source target label sourceSize targetSize sourceSha targetSha
   local kernelSource="${1:-/tmp/vmlinuz}" initrdSource="${2:-/tmp/initrd.img}"
   local kernelTarget="${3:-/boot/vmlinuz}" initrdTarget="${4:-/boot/initrd.img}"
+  local expectedArch="${5:-${VER:-}}"
 
   if [ ! -s "$initrdSource" ] || ! gzip -t "$initrdSource"; then
     failInstallnetHandoff 'installer initrd gzip integrity'; return 1
   fi
+  verifyInstallerKernelArchitecture "$kernelSource" "$expectedArch" || return 1
   for label in kernel initrd; do
     if [ "$label" == kernel ]; then source="$kernelSource"; target="$kernelTarget"
     else source="$initrdSource"; target="$initrdTarget"; fi
     if [ ! -s "$source" ] || [ ! -s "$target" ]; then
       failInstallnetHandoff "installer $label missing or too small" || return 1
     fi
-    sourceSize=$(stat -c %s "$source") || return 1
-    targetSize=$(stat -c %s "$target") || return 1
+    sourceSize=$(stat -Lc %s "$source") || return 1
+    targetSize=$(stat -Lc %s "$target") || return 1
     if [ "$sourceSize" -lt 1048576 ] || [ "$targetSize" != "$sourceSize" ]; then
       failInstallnetHandoff "installer $label size mismatch" || return 1
     fi

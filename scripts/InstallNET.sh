@@ -277,6 +277,38 @@ function probeInstallerResource(){
   return 1
 }
 
+function resolveDistributionCodename(){
+  local release="$1" requested="$2" version
+  requested=$(echo "$requested" |sed -r 's/(.*)/\L\1/')
+  case "$release" in
+    Debian)
+      version=$(echo "$requested" |grep -o '[\.0-9]\{1,\}' |cut -d'.' -f1)
+      case "$version" in
+        7) requested=wheezy ;;
+        8) requested=jessie ;;
+        9) requested=stretch ;;
+        10) requested=buster ;;
+        11) requested=bullseye ;;
+        12) requested=bookworm ;;
+        13) requested=trixie ;;
+      esac
+      ;;
+    Ubuntu)
+      version=$(echo "$requested" |grep -o '[\.0-9]\{1,\}')
+      case "$version" in
+        12.04) requested=precise ;;
+        14.04) requested=trusty ;;
+        16.04) requested=xenial ;;
+        18.04) requested=bionic ;;
+        20.04) requested=focal ;;
+        22.04) requested=jammy ;;
+        24.04) requested=noble ;;
+      esac
+      ;;
+  esac
+  echo "$requested"
+}
+
 function selectMirror(){
   [ $# -ge 3 ] || exit 1
   Relese=$(echo "$1" |sed -r 's/(.*)/\L\1/')
@@ -767,36 +799,12 @@ fi
 if [[ -n "$tmpDIST" ]]; then
   if [[ "$Relese" == 'Debian' ]]; then
     SpikCheckDIST='0'
-    DIST="$(echo "$tmpDIST" |sed -r 's/(.*)/\L\1/')";
-    echo "$DIST" |grep -q '[0-9]';
-    [[ $? -eq '0' ]] && {
-      isDigital="$(echo "$DIST" |grep -o '[\.0-9]\{1,\}' |sed -n '1h;1!H;$g;s/\n//g;$p' |cut -d'.' -f1)";
-      [[ -n $isDigital ]] && {
-        [[ "$isDigital" == '7' ]] && DIST='wheezy';
-        [[ "$isDigital" == '8' ]] && DIST='jessie';
-        [[ "$isDigital" == '9' ]] && DIST='stretch';
-        [[ "$isDigital" == '10' ]] && DIST='buster';
-        [[ "$isDigital" == '11' ]] && DIST='bullseye';
-        [[ "$isDigital" == '12' ]] && DIST='bookworm';
-      }
-    }
+    DIST=$(resolveDistributionCodename "$Relese" "$tmpDIST")
     LinuxMirror=$(selectMirror "$Relese" "$DIST" "$VER" "$tmpMirror")
   fi
   if [[ "$Relese" == 'Ubuntu' ]]; then
     SpikCheckDIST='0'
-    DIST="$(echo "$tmpDIST" |sed -r 's/(.*)/\L\1/')";
-    echo "$DIST" |grep -q '[0-9]';
-    [[ $? -eq '0' ]] && {
-      isDigital="$(echo "$DIST" |grep -o '[\.0-9]\{1,\}' |sed -n '1h;1!H;$g;s/\n//g;$p')";
-      [[ -n $isDigital ]] && {
-        [[ "$isDigital" == '12.04' ]] && DIST='precise';
-        [[ "$isDigital" == '14.04' ]] && DIST='trusty';
-        [[ "$isDigital" == '16.04' ]] && DIST='xenial';
-        [[ "$isDigital" == '18.04' ]] && DIST='bionic';
-        [[ "$isDigital" == '20.04' ]] && DIST='focal';
-        # [[ "$isDigital" == '22.04' ]] && DIST='jammy';
-      }
-    }
+    DIST=$(resolveDistributionCodename "$Relese" "$tmpDIST")
     LinuxMirror=$(selectMirror "$Relese" "$DIST" "$VER" "$tmpMirror")
   fi
   if [[ "$Relese" == 'CentOS' ]]; then

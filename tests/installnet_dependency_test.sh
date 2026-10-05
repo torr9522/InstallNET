@@ -155,9 +155,9 @@ reset_case
 tmpDIST=22.04
 mock_missing='qemu-img sfdisk'
 preflightInstallerDependencies >"$fixture/output"
-expect_install qemu-utils fdisk
+[[ ! -s "$events" ]]
 tmpDIST=''
-printf 'PASS DEP17: modern Ubuntu cloud-image tools map to native packages\n'
+printf 'PASS DEP17: Ubuntu RAM backend needs no host qemu or partition tools\n'
 
 # Substitute fixture paths only in the helper to exercise GRUB conditionals.
 definition=$(declare -f preflightInstallerDependencies)

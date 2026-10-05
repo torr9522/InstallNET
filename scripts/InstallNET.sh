@@ -210,7 +210,7 @@ function preflightInstallerDependencies(){
     lsblk:util-linux findmnt:util-linux
     basename:coreutils cat:coreutils chmod:coreutils cp:coreutils
     cut:coreutils date:coreutils dirname:coreutils head:coreutils
-    ls:coreutils mkdir:coreutils mktemp:coreutils mv:coreutils
+    ls:coreutils mkdir:coreutils mktemp:coreutils mv:coreutils od:coreutils
     rm:coreutils stat:coreutils sync:coreutils tail:coreutils
     tee:coreutils uname:coreutils
   )
@@ -1017,24 +1017,47 @@ EOF
   logInstallnetHandoff "[PASS] installer menuentry in $config"
 }
 
+function verifyPeKernelArchitecture(){
+  local kernel="$1" expected="${2:-}" dos peOffset signature machine
+  local byte1 byte2 byte3 byte4
+
+  dos=$(dd if="$kernel" bs=1 count=2 2>/dev/null |od -An -tx1 |tr -d ' \n') || return 1
+  [ "$dos" == 4d5a ] || return 1
+  read -r byte1 byte2 byte3 byte4 < <(od -An -tx1 -j 60 -N 4 "$kernel") || return 1
+  [ -n "$byte1" ] && [ -n "$byte2" ] && [ -n "$byte3" ] && [ -n "$byte4" ] || return 1
+  peOffset=$((16#$byte4$byte3$byte2$byte1))
+  [ "$peOffset" -ge 64 ] && [ "$peOffset" -le 1048576 ] || return 1
+  signature=$(dd if="$kernel" bs=1 skip="$peOffset" count=4 2>/dev/null |
+    od -An -tx1 |tr -d ' \n') || return 1
+  [ "$signature" == 50450000 ] || return 1
+  machine=$(dd if="$kernel" bs=1 skip="$((peOffset + 4))" count=2 2>/dev/null |
+    od -An -tx1 |tr -d ' \n') || return 1
+  case "$expected:$machine" in
+    arm64:64aa|aarch64:64aa|amd64:6486|x86_64:6486) return 0 ;;
+  esac
+  return 1
+}
+
 function verifyInstallerKernelArchitecture(){
   local kernel="$1" expected="${2:-}" signature
 
   [ -n "$expected" ] || return 0
   case "$expected" in
     arm64|aarch64)
-      signature=$(head -c 60 "$kernel" |tail -c 4) || {
+      signature=$(dd if="$kernel" bs=1 skip=56 count=4 2>/dev/null |
+        od -An -tx1 |tr -d ' \n') || {
         failInstallnetHandoff 'installer kernel architecture unreadable'; return 1
       }
-      [ "$signature" == ARMd ] || {
+      [ "$signature" == 41524d64 ] || verifyPeKernelArchitecture "$kernel" "$expected" || {
         failInstallnetHandoff 'installer kernel architecture mismatch: expected arm64'; return 1
       }
       ;;
     amd64|x86_64|i386)
-      signature=$(head -c 518 "$kernel" |tail -c 4) || {
+      signature=$(dd if="$kernel" bs=1 skip=514 count=4 2>/dev/null |
+        od -An -tx1 |tr -d ' \n') || {
         failInstallnetHandoff 'installer kernel architecture unreadable'; return 1
       }
-      [ "$signature" == HdrS ] || {
+      [ "$signature" == 48647253 ] || verifyPeKernelArchitecture "$kernel" "$expected" || {
         failInstallnetHandoff "installer kernel architecture mismatch: expected $expected"; return 1
       }
       ;;
@@ -1178,9 +1201,9 @@ IPv4="$ipAddr"; MASK="$ipMask"; GATE="$ipGate";
 }
 
 if [[ "$Relese" == 'Debian' ]] || [[ "$Relese" == 'Ubuntu' ]]; then
-  dependence wget,awk,grep,sed,cut,cat,lsblk,cpio,gzip,find,dirname,basename;
+  dependence wget,awk,grep,sed,cut,cat,lsblk,cpio,gzip,find,dirname,basename,od;
 elif [[ "$Relese" == 'CentOS' ]]; then
-  dependence wget,awk,grep,sed,cut,cat,lsblk,cpio,gzip,find,dirname,basename,file,xz;
+  dependence wget,awk,grep,sed,cut,cat,lsblk,cpio,gzip,find,dirname,basename,od,file,xz;
 fi
 [ -n "$tmpWORD" ] && dependence openssl
 [[ -n "$tmpWORD" ]] && myPASSWORD=`openssl passwd -1 "$tmpWORD"`;

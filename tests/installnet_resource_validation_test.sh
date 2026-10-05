@@ -26,6 +26,20 @@ make_kernel() {
   esac
 }
 
+make_pe_kernel() {
+  local architecture=$1 target=$2 machine
+  : >"$target"
+  truncate -s 2097152 "$target"
+  case "$architecture" in
+    arm64) machine='\x64\xaa' ;;
+    amd64) machine='\x64\x86' ;;
+  esac
+  printf 'MZ' |dd of="$target" bs=1 conv=notrunc status=none
+  printf '\x40\x00\x00\x00' |dd of="$target" bs=1 seek=60 conv=notrunc status=none
+  printf 'PE\x00\x00' |dd of="$target" bs=1 seek=64 conv=notrunc status=none
+  printf '%b' "$machine" |dd of="$target" bs=1 seek=68 conv=notrunc status=none
+}
+
 expect_fail() {
   if "$@" >"$fixture/output" 2>&1; then
     printf 'FAIL: unexpectedly passed: %s\n' "$*" >&2
@@ -44,6 +58,21 @@ verifyInstallnetArtifacts \
   "$fixture/source/vmlinuz" "$fixture/source/initrd.img" \
   "$fixture/target/vmlinuz" "$fixture/target/initrd.img" arm64 >"$fixture/output"
 printf 'PASS: correct ARM64 installer kernel accepted\n'
+
+make_pe_kernel arm64 "$fixture/source/vmlinuz"
+copy_artifacts
+verifyInstallnetArtifacts \
+  "$fixture/source/vmlinuz" "$fixture/source/initrd.img" \
+  "$fixture/target/vmlinuz" "$fixture/target/initrd.img" arm64 >"$fixture/output"
+printf 'PASS: ARM64 PE/COFF installer kernel accepted\n'
+
+make_pe_kernel amd64 "$fixture/source/vmlinuz"
+copy_artifacts
+expect_fail verifyInstallnetArtifacts \
+  "$fixture/source/vmlinuz" "$fixture/source/initrd.img" \
+  "$fixture/target/vmlinuz" "$fixture/target/initrd.img" arm64
+grep -Fq 'installer kernel architecture mismatch' "$fixture/output"
+printf 'PASS: wrong-architecture PE/COFF installer kernel rejected\n'
 
 make_kernel amd64 "$fixture/source/vmlinuz"
 copy_artifacts

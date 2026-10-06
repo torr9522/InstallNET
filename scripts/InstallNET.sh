@@ -355,7 +355,11 @@ EOF
 set -eu
 . /installnet-ubuntu.env
 
-echo '[STAGE] INIT_NETWORK_START' >>/reinstall.log
+stage() {
+  printf '[%s] [STAGE] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>/reinstall.log
+}
+
+stage INIT_NETWORK_START
 
 iface=''
 for address in /sys/class/net/*/address; do
@@ -366,7 +370,7 @@ for address in /sys/class/net/*/address; do
   break
 done
 [ -n "$iface" ] || exit 1
-echo "[STAGE] NET_DEVICE_FOUND $iface" >>/reinstall.log
+stage "NET_DEVICE_FOUND $iface"
 ip link set dev lo up
 ip link set dev "$iface" up
 if [ "$USE_DHCP" = 1 ]; then
@@ -382,7 +386,7 @@ else
     echo "nameserver $server" >>/etc/resolv.conf
   done
 fi
-echo '[STAGE] NETWORK_READY' >>/reinstall.log
+stage NETWORK_READY
 EOF
   chmod 700 "$root/installnet-network.sh" || return 1
 
@@ -404,7 +408,8 @@ fail() {
   exit 1
 }
 trap 'fail "line $LINENO returned $?"' ERR
-log() { echo "[INFO] $*"; }
+log() { printf '[%s] [INFO] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+stage() { log "[STAGE] $*"; }
 part() {
   case "$INSTALL_DISK" in *[0-9]) echo "${INSTALL_DISK}p$1" ;; *) echo "${INSTALL_DISK}$1" ;; esac
 }
@@ -460,6 +465,7 @@ validate_target_first_boot() {
 }
 
 log 'preparing observable Alpine RAM environment'
+stage RUNTIME_PACKAGE_SETUP_START
 main_repository=$(awk '/\/main$/ {print; exit}' /etc/apk/repositories)
 [ -n "$main_repository" ] || fail 'Alpine main repository missing'
 community_repository=${main_repository%/main}/community
@@ -468,6 +474,7 @@ grep -Fxq "$community_repository" /etc/apk/repositories ||
 apk add --no-cache ca-certificates coreutils e2fsprogs e2fsprogs-extra \
   openssh-server parted qemu-img util-linux wget
 [ "$BOOT_MODE" = uefi ] && apk add --no-cache dosfstools efibootmgr || true
+stage RUNTIME_PACKAGE_SETUP_DONE
 ssh-keygen -A
 mkdir -p /etc/ssh/sshd_config.d
 cat >/etc/ssh/sshd_config.d/00-installnet.conf <<SSH
@@ -481,7 +488,7 @@ mv /etc/shadow.installnet /etc/shadow
 chmod 600 /etc/shadow
 /usr/sbin/sshd
 log "installer SSH ready on port $SSH_PORT"
-log '[STAGE] SSH_READY'
+stage SSH_READY
 
 if [ "$BOOT_MODE" = uefi ]; then
   efibootmgr --delete-bootnext >/dev/null 2>&1 || true
@@ -492,7 +499,7 @@ if [ "$BOOT_MODE" = uefi ]; then
   done
   ! efibootmgr |grep -Eq '^Boot[0-9A-Fa-f]{4}\*?[[:space:]]+InstallNET one-shot$' ||
     fail 'temporary EFI handoff entry cleanup failed'
-  log '[STAGE] EFI_HANDOFF_CLEANED'
+  stage EFI_HANDOFF_CLEANED
 fi
 
 [ "$(findmnt -n -o FSTYPE /)" = tmpfs ] || fail 'installer root is not RAM-backed tmpfs'
@@ -503,6 +510,7 @@ if lsblk -nrpo MOUNTPOINTS "$INSTALL_DISK" |grep -q '[^[:space:]]'; then
   fail 'target disk is still mounted'
 fi
 
+stage ARTIFACT_METADATA_START
 log 'resolving official Ubuntu checksum and image size'
 expected=$(wget -qO- "$CHECKSUM_URL" |
   awk -v file="*$IMAGE_FILE" '$2 == file {print $1; exit}')
@@ -512,6 +520,7 @@ response=$(wget --spider -S "$IMAGE_URL" 2>&1) || fail 'cloud image metadata req
 image_size=$(echo "$response" |
   awk 'tolower($1) == "content-length:" {gsub("\\r", "", $2); size=$2} END {print size}')
 case "$image_size" in *[!0-9]*|'') fail 'cloud image Content-Length missing' ;; esac
+stage ARTIFACT_METADATA_DONE
 
 disk_mib=$((disk_bytes / 1024 / 1024))
 image_mib=$(((image_size + 1024 * 1024 - 1) / 1024 / 1024))
@@ -527,6 +536,7 @@ esac
 [ $((root_end_mib - root_start_mib)) -ge 4096 ] ||
   fail 'target disk cannot fit Ubuntu root and verified image partition'
 
+stage TARGET_PARTITION_START
 log 'creating isolated root and verified-image partitions'
 if [ "$BOOT_MODE" = uefi ]; then
   parted -s "$INSTALL_DISK" -- \
@@ -549,18 +559,22 @@ INSTALLER_PART=$(part 3)
 wait_block "$ROOT_PART" || fail 'target root partition missing'
 wait_block "$INSTALLER_PART" || fail 'installer partition missing'
 [ "$BOOT_MODE" = bios ] || { EFI_PART=$(part 1); wait_block "$EFI_PART" || fail 'EFI partition missing'; }
+stage TARGET_PARTITION_DONE
 
 mkfs.ext4 -F -L installnet-installer "$INSTALLER_PART"
 mkdir -p /installer
 mount "$INSTALLER_PART" /installer
 log "downloading $IMAGE_FILE once into isolated installer partition"
+stage TARGET_IMAGE_DOWNLOAD_START
 wget --progress=dot:giga -O /installer/cloud-image.qcow2 "$IMAGE_URL"
+stage TARGET_IMAGE_DOWNLOAD_DONE
 actual_size=$(stat -c %s /installer/cloud-image.qcow2)
 [ "$actual_size" = "$image_size" ] || fail 'cloud image size mismatch'
 actual=$(sha256sum /installer/cloud-image.qcow2 |awk '{print $1}')
 [ "$actual" = "$expected" ] || fail 'cloud image SHA256 mismatch'
 qemu-img info /installer/cloud-image.qcow2 |grep -Fq 'file format: qcow2' ||
   fail 'verified cloud image is not qcow2'
+stage TARGET_IMAGE_VERIFY_DONE
 
 log 'attaching verified image read-only'
 modprobe nbd max_part=16
@@ -610,6 +624,7 @@ if [ -n "$SOURCE_EFI" ]; then
   fi
 fi
 
+stage TARGET_COPY_START
 log 'copying verified Ubuntu files into non-overlapping target partitions'
 mkfs.ext4 -F -O '^metadata_csum_seed,^orphan_file' -L cloudimg-rootfs "$ROOT_PART"
 [ "$BOOT_MODE" = bios ] || mkfs.fat -F 32 -n UEFI "$EFI_PART"
@@ -623,6 +638,7 @@ if [ -n "$SOURCE_EFI_DIR" ]; then
   mkdir -p /target/boot/efi/EFI
   cp -a "$SOURCE_EFI_DIR"/EFI/. /target/boot/efi/EFI/
 fi
+stage TARGET_COPY_DONE
 sync
 
 unmount_tree /source-efi
@@ -633,16 +649,19 @@ unmount_tree /target
 qemu-nbd --disconnect /dev/nbd0
 unmount_tree /installer
 
+stage TARGET_RESIZE_START
 log 'removing installer partition and expanding target root'
 parted -s "$INSTALL_DISK" -- rm 3
 parted -s "$INSTALL_DISK" -- resizepart 2 100%
 update_parts
 e2fsck -p -f "$ROOT_PART" || [ "$?" = 1 ]
 resize2fs "$ROOT_PART"
+stage TARGET_RESIZE_DONE
 mount "$ROOT_PART" /target
 mkdir -p /target/boot/efi
 [ "$BOOT_MODE" = bios ] || mount "$EFI_PART" /target/boot/efi
 
+stage BOOT_REPAIR_START
 log 'configuring network, SSH, filesystem and boot'
 mkdir -p /target/etc/netplan /target/etc/ssh/sshd_config.d /target/etc/cloud
 for config in /target/etc/netplan/*; do [ -f "$config" ] && rm -f "$config"; done
@@ -739,7 +758,9 @@ kernel=$(find /target/boot -maxdepth 1 -type f -name 'vmlinuz-*' |sort |tail -n1
 kernel_arch_matches "$kernel" "$EXPECTED_ARCH" ||
   fail 'target kernel architecture mismatch'
 validate_target_first_boot
+stage BOOT_REPAIR_DONE
 log 'Ubuntu fast image installation verified; rebooting'
+stage FINAL_SYNC_START
 cp /reinstall.log /target/var/log/installnet-ubuntu.log
 sync
 reboot

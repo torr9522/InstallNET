@@ -17,6 +17,7 @@ eval "$(declare -f preventKexecReboot | sed '1s/^preventKexecReboot ()/_preventK
 INSTALLNET_HANDOFF_LOG="$fixture/handoff.log"
 INSTALL_ENTRY_TITLE='Install OS [bookworm amd64]'
 export INSTALLNET_NO_REBOOT=0
+export INSTALLNET_USE_EFI_BOOTNEXT=0
 GRUBDIR="$fixture/grub"
 export GRUBFILE=grub.cfg
 mkdir -p "$GRUBDIR"

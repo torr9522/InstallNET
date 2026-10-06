@@ -43,7 +43,10 @@ export INSTALLNET_FORCE_GRUB_ONCE="${INSTALLNET_FORCE_GRUB_ONCE:-1}"
 export INSTALLNET_ABORT_ONESHOT_FAILURE="${INSTALLNET_ABORT_ONESHOT_FAILURE:-1}"
 export INSTALLNET_NO_REBOOT="${INSTALLNET_NO_REBOOT:-0}"
 export INSTALLNET_USE_CUSTOM_GRUB='0'
+export INSTALLNET_USE_EFI_BOOTNEXT='0'
 export INSTALLNET_HANDOFF_LOG='/var/log/installnet-handoff.log'
+export INSTALLNET_ARM64_GRUB_EFI_URL="${INSTALLNET_ARM64_GRUB_EFI_URL:-https://d2lzkl7pfhq30w.cloudfront.net/pub/fedora/linux/releases/44/Everything/aarch64/os/EFI/BOOT/grubaa64.efi}"
+export INSTALLNET_ARM64_GRUB_EFI_SHA256="${INSTALLNET_ARM64_GRUB_EFI_SHA256:-3e14b08313d506384aa83f3b4fe646ab8988d95ec8c638a534e30ec78f377b85}"
 export INSTALLNET_UBUNTU_FAST='0'
 export UBUNTU_IMAGE_URL=''
 export UBUNTU_IMAGE_CHECKSUM_URL=''
@@ -227,6 +230,10 @@ function preflightInstallerDependencies(){
       required+=(cmp:diffutils)
     fi
   fi
+  if [[ "${Relese:-}" == Ubuntu && -d /sys/firmware/efi ]] &&
+     [[ "$(uname -m)" == aarch64 || "$(uname -m)" == arm64 ]]; then
+    required+=(efibootmgr:efibootmgr)
+  fi
   if [[ ! -f /boot/grub/grub.cfg && ! -f /boot/grub2/grub.cfg ]]; then
     required+=(xargs:findutils)
   fi
@@ -348,6 +355,8 @@ EOF
 set -eu
 . /installnet-ubuntu.env
 
+echo '[STAGE] INIT_NETWORK_START' >>/reinstall.log
+
 iface=''
 for address in /sys/class/net/*/address; do
   [ -f "$address" ] || continue
@@ -357,6 +366,7 @@ for address in /sys/class/net/*/address; do
   break
 done
 [ -n "$iface" ] || exit 1
+echo "[STAGE] NET_DEVICE_FOUND $iface" >>/reinstall.log
 ip link set dev lo up
 ip link set dev "$iface" up
 if [ "$USE_DHCP" = 1 ]; then
@@ -372,6 +382,7 @@ else
     echo "nameserver $server" >>/etc/resolv.conf
   done
 fi
+echo '[STAGE] NETWORK_READY' >>/reinstall.log
 EOF
   chmod 700 "$root/installnet-network.sh" || return 1
 
@@ -456,7 +467,7 @@ grep -Fxq "$community_repository" /etc/apk/repositories ||
   echo "$community_repository" >>/etc/apk/repositories
 apk add --no-cache ca-certificates coreutils e2fsprogs e2fsprogs-extra \
   openssh-server parted qemu-img util-linux wget
-[ "$BOOT_MODE" = uefi ] && apk add --no-cache dosfstools || true
+[ "$BOOT_MODE" = uefi ] && apk add --no-cache dosfstools efibootmgr || true
 ssh-keygen -A
 mkdir -p /etc/ssh/sshd_config.d
 cat >/etc/ssh/sshd_config.d/00-installnet.conf <<SSH
@@ -470,6 +481,19 @@ mv /etc/shadow.installnet /etc/shadow
 chmod 600 /etc/shadow
 /usr/sbin/sshd
 log "installer SSH ready on port $SSH_PORT"
+log '[STAGE] SSH_READY'
+
+if [ "$BOOT_MODE" = uefi ]; then
+  efibootmgr --delete-bootnext >/dev/null 2>&1 || true
+  for id in $(efibootmgr |awk '$2 == "InstallNET" && $3 == "one-shot" {
+      id=$1; sub(/^Boot/, "", id); sub(/\*$/, "", id); print id
+    }'); do
+    efibootmgr --bootnum "$id" --delete-bootnum >/dev/null
+  done
+  ! efibootmgr |grep -Eq '^Boot[0-9A-Fa-f]{4}\*?[[:space:]]+InstallNET one-shot$' ||
+    fail 'temporary EFI handoff entry cleanup failed'
+  log '[STAGE] EFI_HANDOFF_CLEANED'
+fi
 
 [ "$(findmnt -n -o FSTYPE /)" = tmpfs ] || fail 'installer root is not RAM-backed tmpfs'
 [ -b "$INSTALL_DISK" ] || fail "target disk missing: $INSTALL_DISK"
@@ -732,6 +756,7 @@ EOF
 mkdir -p "$sysroot/root" "$sysroot/etc/local.d" "$sysroot/etc/runlevels/default"\
 cp /installnet-ubuntu.sh "$sysroot/etc/local.d/installnet-ubuntu.start"\
 cp /installnet-ubuntu.env "$sysroot/root/installnet-ubuntu.env"\
+[ ! -f /reinstall.log ] || cp /reinstall.log "$sysroot/reinstall.log"\
 chmod 700 "$sysroot/etc/local.d/installnet-ubuntu.start"\
 chmod 600 "$sysroot/root/installnet-ubuntu.env"\
 ln -sf /etc/init.d/local "$sysroot/etc/runlevels/default/local"' "$root/init" || return 1
@@ -1088,7 +1113,7 @@ function verifyInstallerKernelArchitecture(){
 function verifyInstallnetArtifacts(){
   local source target label sourceSize targetSize sourceSha targetSha
   local kernelSource="${1:-/tmp/vmlinuz}" initrdSource="${2:-/tmp/initrd.img}"
-  local kernelTarget="${3:-/boot/vmlinuz}" initrdTarget="${4:-/boot/initrd.img}"
+  local kernelTarget="${3:-/boot/installnet-vmlinuz}" initrdTarget="${4:-/boot/installnet-initrd.img}"
   local expectedArch="${5:-${VER:-}}"
 
   if [ ! -s "$initrdSource" ] || ! gzip -t "$initrdSource"; then
@@ -1098,7 +1123,7 @@ function verifyInstallnetArtifacts(){
   for label in kernel initrd; do
     if [ "$label" == kernel ]; then source="$kernelSource"; target="$kernelTarget"
     else source="$initrdSource"; target="$initrdTarget"; fi
-    if [ ! -s "$source" ] || [ ! -s "$target" ]; then
+    if [ ! -s "$source" ] || [ ! -s "$target" ] || [ -L "$target" ]; then
       failInstallnetHandoff "installer $label missing or too small" || return 1
     fi
     sourceSize=$(stat -Lc %s "$source") || return 1
@@ -1118,6 +1143,76 @@ function verifyInstallnetArtifacts(){
     fi
     logInstallnetHandoff "[PASS] installer $label"
   done
+}
+
+function prepareInstallnetEfiBoot(){
+  local efiMount efiSource diskName partNumber installDir loader config temp
+  local label='InstallNET one-shot' id bootnext secureBoot sourceSha targetSha
+
+  for secureBoot in /sys/firmware/efi/efivars/SecureBoot-*; do
+    [[ -e "$secureBoot" ]] || continue
+    [[ "$(od -An -tu1 -j4 -N1 "$secureBoot" |tr -d ' ')" != 1 ]] || {
+      failInstallnetHandoff 'direct EFI handoff is unavailable with Secure Boot enabled'; return 1;
+    }
+  done
+
+  efiMount=$(findmnt -n -o TARGET /boot/efi 2>/dev/null) || return 1
+  efiSource=$(findmnt -n -o SOURCE --target "$efiMount" 2>/dev/null) || return 1
+  diskName=$(lsblk -ndo PKNAME "$efiSource" |head -n1) || return 1
+  partNumber=$(printf '%s\n' "$efiSource" |grep -oE '[0-9]+$') || return 1
+  [[ "$diskName" =~ ^[a-zA-Z0-9._-]+$ && "$partNumber" =~ ^[0-9]+$ ]] || {
+    failInstallnetHandoff 'resolve EFI system partition'; return 1;
+  }
+
+  installDir="$efiMount/EFI/installnet"
+  loader="$installDir/grubaa64.efi"
+  config="$installDir/grub.cfg"
+  mkdir -p "$installDir" || return 1
+  temp=$(mktemp "$installDir/grubaa64.efi.XXXXXX") || return 1
+  if ! wget --no-check-certificate -qO "$temp" "$INSTALLNET_ARM64_GRUB_EFI_URL" ||
+     ! verifyPeKernelArchitecture "$temp" arm64; then
+    rm -f "$temp"
+    failInstallnetHandoff 'download or validate independent ARM64 EFI GRUB'; return 1
+  fi
+  sourceSha=$(sha256sum "$temp" |awk '{print $1}') || { rm -f "$temp"; return 1; }
+  [[ "$sourceSha" == "$INSTALLNET_ARM64_GRUB_EFI_SHA256" ]] || {
+    rm -f "$temp"
+    failInstallnetHandoff 'independent ARM64 EFI GRUB SHA256 mismatch'; return 1;
+  }
+  chmod 600 "$temp" && mv -f "$temp" "$loader" || { rm -f "$temp"; return 1; }
+  targetSha=$(sha256sum "$loader" |awk '{print $1}') || return 1
+  [[ "$targetSha" == "$sourceSha" ]] || return 1
+
+  temp=$(mktemp "$installDir/grub.cfg.XXXXXX") || return 1
+  cat >"$temp" <<EOF
+set timeout_style=menu
+set timeout=5
+menuentry '${INSTALL_ENTRY_TITLE}' --unrestricted {
+    search --no-floppy --file --set=root ${GRUB_KERNEL_PATH}
+    linux ${GRUB_KERNEL_PATH} ${BOOT_OPTION}
+    initrd ${GRUB_INITRD_PATH}
+}
+EOF
+  chmod 600 "$temp" && mv -f "$temp" "$config" || { rm -f "$temp"; return 1; }
+
+  for id in $(efibootmgr |awk '$2 == "InstallNET" && $3 == "one-shot" {
+      id=$1; sub(/^Boot/, "", id); sub(/\*$/, "", id); print id
+    }'); do
+    efibootmgr --bootnum "$id" --delete-bootnum >/dev/null || return 1
+  done
+  efibootmgr --create-only --disk "/dev/$diskName" --part "$partNumber" \
+    --label "$label" --loader '\EFI\installnet\grubaa64.efi' >/dev/null || return 1
+  id=$(efibootmgr |awk '$2 == "InstallNET" && $3 == "one-shot" {
+    id=$1; sub(/^Boot/, "", id); sub(/\*$/, "", id); print id
+  }' |tail -n1)
+  [[ -n "$id" ]] || { failInstallnetHandoff 'create independent EFI boot entry'; return 1; }
+  efibootmgr --bootnext "$id" >/dev/null || return 1
+  bootnext=$(efibootmgr |sed -n 's/^BootNext:[[:space:]]*//p')
+  [[ "${bootnext,,}" == "${id,,}" ]] || {
+    failInstallnetHandoff 'EFI BootNext readback'; return 1;
+  }
+  logInstallnetHandoff "[PASS] independent ARM64 EFI GRUB SHA256 $targetSha"
+  logInstallnetHandoff "[PASS] firmware BootNext $id"
 }
 
 function verifyInstallnetGrub(){
@@ -1149,6 +1244,12 @@ function scheduleVerifiedInstallnetBoot(){
 
 function runInstallnetHandoff(){
   verifyInstallnetArtifacts || return 1
+  if [[ "$INSTALLNET_USE_EFI_BOOTNEXT" == 1 ]]; then
+    prepareInstallnetEfiBoot || return 1
+    sync || { failInstallnetHandoff 'filesystem sync'; return 1; }
+    logInstallnetHandoff '[PASS] handoff preflight and filesystem sync'
+    return 0
+  fi
   writeInstallnetCustomEntry || return 1
   verifyInstallnetGrub || return 1
   scheduleVerifiedInstallnetBoot || return 1
@@ -1186,12 +1287,20 @@ if [[ "$loaderMode" == '0' && "$GRUBDIR" == '/boot/grub' && "$GRUBVER" == '0' &&
       ( "$linux_relese" == 'debian' || "$linux_relese" == 'ubuntu' ) && "$ddMode" == '0' &&
       "$INSTALLNET_FORCE_GRUB_ONCE" == '1' ]]; then
   INSTALLNET_USE_CUSTOM_GRUB='1'
+  if [[ "$linux_relese" == ubuntu && -d /sys/firmware/efi ]] &&
+     [[ "$(uname -m)" == aarch64 || "$(uname -m)" == arm64 ]]; then
+    INSTALLNET_USE_EFI_BOOTNEXT='1'
+  fi
   : >"$INSTALLNET_HANDOFF_LOG" || exit 1
   chmod 600 "$INSTALLNET_HANDOFF_LOG"
   logInstallnetHandoff "UTC: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   logInstallnetHandoff "system: $(uname -a)"
   logInstallnetHandoff "GRUBDIR=$GRUBDIR GRUBFILE=$GRUBFILE GRUBVER=$GRUBVER"
-  prepareInstallnetGrub || exit 1
+  if [[ "$INSTALLNET_USE_EFI_BOOTNEXT" == 1 ]]; then
+    logInstallnetHandoff '[INFO] ARM64 UEFI uses independent EFI GRUB and firmware BootNext'
+  else
+    prepareInstallnetGrub || exit 1
+  fi
 fi
 clear && echo -e "\n\033[36m# Check Dependence\033[0m\n"
 
@@ -1511,8 +1620,8 @@ if [[ "$loaderMode" == "0" ]]; then
   [ -n "$setConsole" ] && BOOT_OPTION="$BOOT_OPTION --- console=$setConsole"
 
   if [[ "$INSTALLNET_USE_CUSTOM_GRUB" == '1' ]]; then
-    [[ "$Type" == 'InBoot' ]] && GRUB_KERNEL_PATH='/boot/vmlinuz' && GRUB_INITRD_PATH='/boot/initrd.img'
-    [[ "$Type" == 'NoBoot' ]] && GRUB_KERNEL_PATH='/vmlinuz' && GRUB_INITRD_PATH='/initrd.img'
+    [[ "$Type" == 'InBoot' ]] && GRUB_KERNEL_PATH='/boot/installnet-vmlinuz' && GRUB_INITRD_PATH='/boot/installnet-initrd.img'
+    [[ "$Type" == 'NoBoot' ]] && GRUB_KERNEL_PATH='/installnet-vmlinuz' && GRUB_INITRD_PATH='/installnet-initrd.img'
     logInstallnetHandoff "entry=$INSTALL_ENTRY_TITLE kernel=$GRUB_KERNEL_PATH initrd=$GRUB_INITRD_PATH"
   else
   [[ "$Type" == 'InBoot' ]] && {
@@ -1750,8 +1859,9 @@ fi
 find . | cpio -H newc --create --verbose | gzip -9 > /tmp/initrd.img;
 
 if [[ "$loaderMode" == "0" ]]; then
-  cp -f /tmp/initrd.img /boot/initrd.img || sudo cp -f /tmp/initrd.img /boot/initrd.img
-  cp -f /tmp/vmlinuz /boot/vmlinuz || sudo cp -f /tmp/vmlinuz /boot/vmlinuz
+  rm -f /boot/installnet-initrd.img /boot/installnet-vmlinuz
+  cp -f /tmp/initrd.img /boot/installnet-initrd.img || sudo cp -f /tmp/initrd.img /boot/installnet-initrd.img
+  cp -f /tmp/vmlinuz /boot/installnet-vmlinuz || sudo cp -f /tmp/vmlinuz /boot/installnet-vmlinuz
 
   if [[ "$INSTALLNET_USE_CUSTOM_GRUB" == '1' ]]; then
     finishInstallnetHandoff

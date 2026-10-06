@@ -15,12 +15,13 @@ source <(awk '
 GRUBDIR="$fixture/boot/grub"
 GRUBFILE=grub.cfg
 GRUBVER=0
-GRUB_KERNEL_PATH=/boot/vmlinuz
-GRUB_INITRD_PATH=/boot/initrd.img
+GRUB_KERNEL_PATH=/boot/installnet-vmlinuz
+GRUB_INITRD_PATH=/boot/installnet-initrd.img
 INSTALL_ENTRY_TITLE='Install OS [bookworm amd64]'
 INSTALLNET_HANDOFF_LOG="$fixture/handoff.log"
 INSTALLNET_NO_REBOOT=1
 INSTALLNET_USE_CUSTOM_GRUB=1
+INSTALLNET_USE_EFI_BOOTNEXT=0
 BOOT_OPTION='auto=true hostname=debian domain=debian quiet'
 mkdir -p "$GRUBDIR" "$fixture/source" "$fixture/target"
 

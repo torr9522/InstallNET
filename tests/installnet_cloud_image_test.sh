@@ -67,6 +67,13 @@ grep -Fq "EXPECTED_ARCH='amd64'" "$fixture/root/installnet-ubuntu.env"
 grep -Fq "EXPECTED_CODENAME='jammy'" "$fixture/root/installnet-ubuntu.env"
 grep -Fq 'installnet-network.sh' "$fixture/root/init"
 grep -Fq 'installnet-ubuntu.start' "$fixture/root/init"
+grep -Fq 'cp /reinstall.log "$sysroot/reinstall.log"' "$fixture/root/init"
+grep -Fq '[STAGE] INIT_NETWORK_START' "$fixture/root/installnet-network.sh"
+grep -Fq '[STAGE] NETWORK_READY' "$fixture/root/installnet-network.sh"
+grep -Fq '[STAGE] EFI_HANDOFF_CLEANED' "$fixture/root/installnet-ubuntu.sh"
+grep -Fq "fail 'temporary EFI handoff entry cleanup failed'" "$fixture/root/installnet-ubuntu.sh"
+grep -Fq "GRUB_KERNEL_PATH='/boot/installnet-vmlinuz'" "$script"
+grep -Fq 'rm -f /boot/installnet-initrd.img /boot/installnet-vmlinuz' "$script"
 printf 'PASS CLOUD3: installer environment and init hooks rendered\n'
 
 extract_line=$(grep -n '^\$UNCOMP < /tmp/\$NewIMG | cpio ' "$script" |cut -d: -f1)

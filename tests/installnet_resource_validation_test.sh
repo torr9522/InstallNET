@@ -85,10 +85,10 @@ cp "$fixture/source/vmlinuz" "$fixture/backing/vmlinuz"
 cp "$fixture/source/initrd.img" "$fixture/backing/initrd.img"
 ln -sf ../backing/vmlinuz "$fixture/target/vmlinuz"
 ln -sf ../backing/initrd.img "$fixture/target/initrd.img"
-verifyInstallnetArtifacts \
+expect_fail verifyInstallnetArtifacts \
   "$fixture/source/vmlinuz" "$fixture/source/initrd.img" \
-  "$fixture/target/vmlinuz" "$fixture/target/initrd.img" amd64 >"$fixture/output"
-printf 'PASS: symlinked installer targets are measured by content\n'
+  "$fixture/target/vmlinuz" "$fixture/target/initrd.img" amd64
+printf 'PASS: symlinked installer targets are rejected\n'
 
 rm "$fixture/target/vmlinuz" "$fixture/target/initrd.img"
 copy_artifacts

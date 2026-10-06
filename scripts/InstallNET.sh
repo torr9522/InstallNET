@@ -431,6 +431,22 @@ kernel_arch_matches() {
     od -An -tx1 |tr -d ' \n')
   [ "$magic" = "$expected_magic" ]
 }
+validate_target_first_boot() {
+  [ -f /target/etc/machine-id ] && [ ! -s /target/etc/machine-id ] ||
+    fail 'target machine-id must be an empty regular file before first boot'
+  [ -f /target/etc/cloud/cloud-init.disabled ] ||
+    fail 'target cloud-init disable marker missing'
+  [ -s /target/etc/netplan/99-installnet.yaml ] ||
+    fail 'target network configuration missing'
+  [ -s /target/etc/ssh/sshd_config.d/00-installnet.conf ] ||
+    fail 'target SSH configuration missing'
+  [ -s /target/etc/fstab ] || fail 'target fstab missing'
+  [ "$(cat /target/etc/hostname)" = ubuntu ] || fail 'target hostname missing'
+  chroot /target netplan generate || fail 'target network configuration invalid'
+  [ "$(chroot /target systemctl is-enabled ssh.service)" = enabled ] ||
+    fail 'target SSH service is not enabled'
+  log 'target first-boot configuration verified'
+}
 
 log 'preparing observable Alpine RAM environment'
 main_repository=$(awk '/\/main$/ {print; exit}' /etc/apk/repositories)
@@ -698,6 +714,7 @@ kernel=$(find /target/boot -maxdepth 1 -type f -name 'vmlinuz-*' |sort |tail -n1
 [ -s "$kernel" ] || fail 'target kernel missing after copy'
 kernel_arch_matches "$kernel" "$EXPECTED_ARCH" ||
   fail 'target kernel architecture mismatch'
+validate_target_first_boot
 log 'Ubuntu fast image installation verified; rebooting'
 cp /reinstall.log /target/var/log/installnet-ubuntu.log
 sync
